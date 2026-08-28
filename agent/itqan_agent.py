@@ -175,12 +175,10 @@ def process_pair(room, pair, done):
             log("  WARNING could not delete cloud copy {} ({})".format(rec["id"], e.code))
     log("  deleted cloud copies")
 
-    for path in local.values():
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
+    # The per-person files stay on disk. The cloud copy is what matters for
+    # PDPL and it is gone; keeping the local originals means a past call can be
+    # re-rendered when the renderer improves, without asking for a new call.
+    # Use --purge-raw to reclaim the space once you are happy with the output.
     done.add(key)
     save_state(done)
     return True
@@ -219,7 +217,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--watch", action="store_true", help="keep polling")
     ap.add_argument("--interval", type=int, default=POLL_SECONDS)
+    ap.add_argument("--purge-raw", action="store_true",
+                    help="delete kept per-person source files, then exit")
     args = ap.parse_args()
+
+    if args.purge_raw:
+        freed = 0
+        for name in os.listdir(RAW_DIR) if os.path.isdir(RAW_DIR) else []:
+            p = os.path.join(RAW_DIR, name)
+            freed += os.path.getsize(p)
+            os.remove(p)
+        log("purged raw sources, freed {:.1f} MB".format(freed / 1e6))
+        return
 
     _load_env_file()
     log("agent started - archive at " + ROOT)

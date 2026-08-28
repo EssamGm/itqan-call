@@ -35,7 +35,9 @@ CANVAS = 1080
 DIAMETER = 460
 MARGIN = 60
 GAP = 40
-RING = 4                # bubble ring thickness, px
+RING = 7                # bubble ring thickness, px; 4 was invisible on a phone
+LOGO_W = 280            # reversed wordmark, centred under the bubbles
+LOGO_Y = 880
 CENTER_Y = 470          # bubbles sit slightly high, leaving room for labels
 TOP_Y = CENTER_Y - DIAMETER // 2
 A_X = MARGIN                        # 60
@@ -165,7 +167,14 @@ def pick_encoder(requested):
     return "libx264"
 
 
-def build_video_filter(a, b, total, fps):
+def logo_path():
+    """The reversed wordmark, rendered onto this exact surface colour."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "assets", "logo-reversed.png")
+    return p if os.path.isfile(p) else None
+
+
+def build_video_filter(a, b, total, fps, logo_idx=None):
     """
     Filter graph: dark canvas, two circular bubbles with rings.
 
@@ -196,6 +205,13 @@ def build_video_filter(a, b, total, fps):
             parts.append("[{}][m{}]overlay={}:{}:eof_action=pass[s{}]".format(
                 stage, idx, x, TOP_Y, idx))
             stage = "s{}".format(idx)
+
+    if logo_idx is not None:
+        # The logo PNG is rendered on the same surface colour as the canvas, so
+        # its rectangle disappears into the background with no alpha needed.
+        parts.append("[{}:v]scale={}:-1[logo]".format(logo_idx, LOGO_W))
+        parts.append("[{}][logo]overlay=(W-w)/2:{}[wm]".format(stage, LOGO_Y))
+        stage = "wm"
 
     parts.append("[{}]format=yuv420p[vout]".format(stage))
     return ";".join(parts)
@@ -256,9 +272,13 @@ def main():
             amix = "[{}:a]anull[amix]".format(audio_srcs[0])
         # asplit because a filter output label may only be consumed once, and
         # the same mixed audio feeds both the video and the audio-only file.
+        # loudnorm resamples internally and emits 96kHz; force it back to the
+        # 48kHz every platform expects, so files are not needlessly large.
         norm = "anull" if args.no_loudnorm else "loudnorm=I=-16:TP=-1.5:LRA=11"
-        chain = "[amix]" + norm + ",asplit=2[aout_v][aout_a]"
-        filt = build_video_filter(a, b, total, args.fps) + ";" + amix + ";" + chain
+        chain = "[amix]" + norm + ",aresample=48000,asplit=2[aout_v][aout_a]"
+        logo = logo_path()
+        filt = (build_video_filter(a, b, total, args.fps, 5 if logo else None)
+                + ";" + amix + ";" + chain)
 
         encoder = pick_encoder(args.encoder)
         quality = (["-cq", "23", "-preset", "p5"] if encoder == "h264_nvenc"
@@ -272,6 +292,8 @@ def main():
         cmd += ["-itsoffset", str(args.a_offset), "-i", args.a]
         cmd += ["-itsoffset", str(args.b_offset), "-i", args.b]
         cmd += ["-i", mask, "-i", ring_a, "-i", ring_b]
+        if logo:
+            cmd += ["-i", logo]
         cmd += ["-filter_complex", filt]
         # Two outputs from one decode pass: square video, and clean audio.
         cmd += ["-map", "[vout]", "-map", "[aout_v]", "-c:v", encoder] + quality

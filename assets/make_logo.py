@@ -15,6 +15,7 @@ composites invisibly, and this avoids the alpha fringing renderPM produces.
 """
 
 import os
+import re
 import sys
 
 from reportlab.graphics import renderPM
@@ -28,7 +29,16 @@ NAVY = "#14365C"
 REVERSED_INK = "#F2F5F8"   # wordmark colour on a dark surface
 SURFACE = 0x0B1A2A
 
-SCALE = 8  # 86.36 x 31.80 viewBox -> ~691 x 254 px, ample for a 1080 canvas
+# Scale via DPI rather than transforming the drawing. svglib converts the SVG
+# to points (1px = 0.75pt), so scaling the drawing by hand overflows a canvas
+# that was sized from the unscaled width and silently crops the wordmark.
+DPI = 72 * 12  # ~1036px wide, ample for a 1080 canvas
+
+
+# The logo's viewBox, plus the clear space the guidelines require on every
+# side: one gold-square height (X = 7 units).
+VIEWBOX = (86.36, 31.80)
+CLEAR = 7.0
 
 
 def build(svg_text, path, ink):
@@ -37,6 +47,20 @@ def build(svg_text, path, ink):
     if ink != NAVY:
         variant = variant.replace(NAVY, ink)
 
+    # Drop width/height and widen the viewBox. svglib reads width/height as
+    # points but the viewBox as user units - a 1.333x mismatch that silently
+    # crops the wordmark. Leaving only a padded viewBox removes the ambiguity
+    # and bakes in the mandated clear space at the same time.
+    w, h = VIEWBOX
+    variant = re.sub(r'\swidth="[^"]*"', "", variant, count=1)
+    variant = re.sub(r'\sheight="[^"]*"', "", variant, count=1)
+    variant = variant.replace(
+        'viewBox="0 0 86.36 31.80"',
+        'viewBox="{} {} {} {}"'.format(
+            -CLEAR, -CLEAR, w + CLEAR * 2, h + CLEAR * 2),
+        1,
+    )
+
     tmp_svg = path + ".tmp.svg"
     with open(tmp_svg, "w", encoding="utf-8") as fh:
         fh.write(variant)
@@ -44,10 +68,7 @@ def build(svg_text, path, ink):
         drawing = svg2rlg(tmp_svg)
         if drawing is None:
             sys.exit("error: svglib could not parse " + tmp_svg)
-        drawing.scale(SCALE, SCALE)
-        drawing.width *= SCALE
-        drawing.height *= SCALE
-        renderPM.drawToFile(drawing, path, fmt="PNG", bg=SURFACE)
+        renderPM.drawToFile(drawing, path, fmt="PNG", bg=SURFACE, dpi=DPI)
     finally:
         os.remove(tmp_svg)
     print("wrote " + os.path.basename(path))
