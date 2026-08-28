@@ -156,6 +156,54 @@ def find_pending_call():
     }
 
 
+def end_call(room_name):
+    """
+    End a call for everyone by deleting its room.
+
+    The coach hanging up has to mean the call is over. Leaving on the client
+    only disconnects that one browser: the trainee stays connected, and Daily
+    keeps billing for a call nobody is having. Deleting the room disconnects
+    both sides server-side, so it cannot be defeated by a client that ignored
+    the event or a tab left open.
+    """
+    if not room_name or not str(room_name).replace("-", "").replace("_", "").isalnum():
+        raise SessionError("invalid room")
+    try:
+        req = urllib.request.Request(
+            DAILY_API + "/rooms/" + room_name, method="DELETE",
+            headers={"Authorization": "Bearer " + _api_key()})
+        urllib.request.urlopen(req, timeout=15)
+        return True
+    except urllib.error.HTTPError as e:
+        # Already gone is a success as far as the caller is concerned.
+        if e.code == 404:
+            return True
+        raise SessionError("could not end the call ({})".format(e.code))
+    except urllib.error.URLError as e:
+        raise SessionError("could not reach the call service: {}".format(e.reason))
+
+
+def list_active_calls():
+    """Rooms that currently have anyone in them, so a live call is never hidden."""
+    presence = _get("/presence") or {}
+    rooms = presence.get("data", presence)
+    if not isinstance(rooms, dict):
+        return []
+    out = []
+    for room_name, participants in rooms.items():
+        if isinstance(participants, list) and participants:
+            out.append({
+                "sessionId": room_name,
+                "people": [
+                    {"role": p.get("userId") or p.get("user_id") or "",
+                     "name": p.get("userName") or p.get("user_name") or "",
+                     "seconds": p.get("duration") or 0}
+                    for p in participants
+                ],
+            })
+    return out
+
+
 def join_existing(room_name, role=ROLE_COACH, display_name=""):
     """Mint a token for a room that already exists, without creating one."""
     if not room_name or not str(room_name).replace("-", "").replace("_", "").isalnum():
@@ -221,6 +269,9 @@ def create_session(role=ROLE_TRAINEE, display_name=""):
         "max_participants": 2,
         "exp": expiry,
         "eject_at_room_exp": True,
+        # Hard cap against a forgotten tab quietly billing for hours. No
+        # coaching call runs this long, so it can only ever catch a mistake.
+        "eject_after_elapsed": 2 * 60 * 60,
         "enable_prejoin_ui": False,
         "enable_screenshare": False,
         "enable_chat": False,

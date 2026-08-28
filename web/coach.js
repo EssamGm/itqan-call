@@ -153,7 +153,8 @@ $("btn-hangup").addEventListener("click", () => endCall());
 async function endCall() {
   if (!inCall) return;
   const seconds = stopTimer();
-  await provider.leave().catch(() => {});
+  // The coach hanging up ends the call for both sides.
+  await provider.leave({ endForEveryone: true }).catch(() => {});
   $("remote-audio").srcObject = null;
   micOn = true;
   $("btn-mic").classList.remove("off");

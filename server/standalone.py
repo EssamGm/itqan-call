@@ -21,7 +21,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_logic import (  # noqa: E402
-    SessionError, create_session, find_pending_call, join_existing,
+    SessionError, create_session, end_call, find_pending_call,
+    join_existing, list_active_calls,
 )
 from push import config_status, public_key, save_subscription  # noqa: E402
 
@@ -55,6 +56,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(502, {"error": str(e)})
         if path == "/api/subscribe":
             return self._json(200, dict(config_status(), publicKey=public_key()))
+        if path == "/api/end":
+            try:
+                return self._json(200, {"active": list_active_calls()})
+            except SessionError as e:
+                return self._json(502, {"error": str(e)})
         return super().do_GET()
 
     def do_POST(self):
@@ -73,6 +79,8 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/answer":
                 return self._json(200, join_existing(
                     body.get("sessionId"), "coach", body.get("name") or ""))
+            if path == "/api/end":
+                return self._json(200, {"ended": end_call(body.get("sessionId"))})
             if path == "/api/subscribe":
                 ok = save_subscription(body.get("subscription") or body)
                 return self._json(200 if ok else 503, {"stored": ok})

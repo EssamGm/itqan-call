@@ -105,18 +105,6 @@ export class DailyProvider {
     return this.session;
   }
 
-  /**
-   * Start one audio recording per participant.
-   *
-   * Two concurrent instances rather than one mixed file, so the renderer can
-   * tell who is speaking and animate the right bubble. Recording has to be
-   * started from a client: Daily's start_cloud_recording token property only
-   * covers plain "cloud" mode, and the coach's token is the room owner.
-   *
-   * Resolves true only when both started. Nothing is shown during the call on
-   * success; only failure surfaces, so a session is never lost silently while
-   * the call still feels like an ordinary phone call.
-   */
   /** Wait until both people are in the room. Returns the participant list. */
   async waitForPeer(timeoutMs = 15000) {
     const deadline = Date.now() + timeoutMs;
@@ -130,6 +118,18 @@ export class DailyProvider {
     return people;
   }
 
+  /**
+   * Start one audio recording per participant.
+   *
+   * Two concurrent instances rather than one mixed file, so the renderer knows
+   * who is speaking. Recording must be started from a client: Daily's
+   * start_cloud_recording token property covers only plain "cloud" mode, and
+   * the coach's token is the room owner.
+   *
+   * Resolves true only when Daily confirms both. Nothing is shown during the
+   * call on success; only failure surfaces, so a session is never lost
+   * silently while the call still feels like an ordinary phone call.
+   */
   async startRecording({ timeoutMs = 20000 } = {}) {
     if (!this.call) return false;
 
@@ -180,14 +180,42 @@ export class DailyProvider {
     return confirmed.size === 2;
   }
 
-  async leave() {
-    if (!this.call) return;
+  /**
+   * Leave the call.
+   *
+   * endForEveryone deletes the room server-side. Leaving on the client only
+   * disconnects this browser - the other side stays connected and Daily keeps
+   * billing for a call nobody is having. Only the coach does this; a trainee
+   * hanging up should not be able to end the coach's session.
+   */
+  async leave({ endForEveryone = false } = {}) {
+    const sessionId = this.session && this.session.sessionId;
     try {
-      await this.call.leave();
+      if (this.call) await this.call.leave();
     } finally {
-      this.call.destroy();
-      this.call = null;
+      if (this.call) {
+        this.call.destroy();
+        this.call = null;
+      }
     }
+    if (endForEveryone && sessionId) {
+      try {
+        await fetch(`${this.apiBase}/end`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        });
+      } catch (_) {
+        /* the room also expires on its own; nothing useful to do here */
+      }
+    }
+  }
+
+  /** Any call still running, so one can never be live without the coach knowing. */
+  async activeCalls() {
+    const res = await fetch(`${this.apiBase}/end`);
+    if (!res.ok) return [];
+    return (await res.json()).active || [];
   }
 
   setMic(on) {
