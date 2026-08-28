@@ -39,15 +39,20 @@ NAVY_LIGHT = "3E6C99"   # trainee bubble ring
 TEXT = "#F2F5F8"
 
 # Square 1:1 canvas geometry.
+#
+# The bubbles are deliberately small for their canvas. They are not the
+# content - the sound is - and leaving most of the frame empty gives the
+# speaking bloom somewhere to expand into. A big static circle reads as a
+# placeholder; a small one surrounded by movement reads as alive.
 CANVAS = 1080
-DIAMETER = 460
-MARGIN = 60
-GAP = 40
-RING = 7
-CENTER_Y = 470
+DIAMETER = 300
+MARGIN = 130
+GAP = 220
+RING = 6
+CENTER_Y = 450
 TOP_Y = CENTER_Y - DIAMETER // 2
-A_X = MARGIN                        # 60
-B_X = MARGIN + DIAMETER + GAP       # 560
+A_X = MARGIN                        # 130
+B_X = MARGIN + DIAMETER + GAP       # 650
 
 NAME_MAX_W = int(DIAMETER * 0.72)   # keep names clear of the circle's edge
 NAME_MAX_H = int(DIAMETER * 0.30)
@@ -78,11 +83,20 @@ VOICE_CLEANUP = (
 
 TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 
-GLOW_SIZE = DIAMETER + 120      # room for the halo to bloom outside the ring
-GLOW_MID = DIAMETER / 2.0 + 14  # sits just outside the bubble edge
-GLOW_SIGMA = 22.0               # falloff; wider reads as a softer breath
-GLOW_GAIN = 1.7                 # ordinary speech should glow clearly,
-                                # not only shouting
+# The speaking bloom, in concentric layers.
+#
+# One halo can only get brighter, which barely registers at a glance. Stacking
+# rings at increasing radii, each needing a louder voice before it lights,
+# makes the glow visibly *expand* as someone speaks - motion outward, which the
+# eye catches from across a room in a way a brightness change never does.
+#
+# (offset beyond the bubble edge, softness, level needed to light, response)
+GLOW_LAYERS = [
+    (6,   10,   0, 2.6),   # rim: lights on any speech, defines the bubble
+    (54,  30,  40, 2.3),   # near bloom: normal conversation
+    (128, 58, 100, 2.9),   # far bloom: emphasis and louder moments
+]
+GLOW_SIZE = DIAMETER + 2 * 330  # canvas the layers are drawn on
 
 LOGO_W = 280
 LOGO_Y = 880
@@ -270,26 +284,35 @@ def make_glow(path, size, mid_radius, sigma, color):
     ])
 
 
-def level_graph(src, size, label):
+def level_graph(src, size, tag, layers):
     """
-    Turn one speaker's audio into a per-frame brightness value.
+    Turn one speaker's audio into per-frame opacity, one stream per bloom layer.
 
     showvolume draws a meter whose length follows the signal; averaging that
-    whole bar down to a single pixel turns it into one number per frame, which
-    can then be blown up into a uniform field and used as an opacity mask.
-    Native ffmpeg throughout, so it costs almost nothing.
+    whole bar down to a single pixel turns it into one number per frame. Each
+    layer then gets its own response curve, so quiet speech lights only the rim
+    while a raised voice pushes the bloom outwards.
+
+    Native ffmpeg throughout, so it costs the same whether the call is one
+    minute or forty.
     """
-    return (
+    parts = [
         "[{}:a]showvolume=r=25:b=0:w=400:h=20:f=0.9:dm=0:o=h,"
-        "crop=400:1:0:10,scale=1:1,"
-        # Lift the curve so conversational level reads as a clear glow rather
-        # than a hint; without it only the loudest moments show. No clip():
-        # lutyuv clamps by itself, and the commas inside clip() would be read
-        # as filter separators.
-        "lutyuv=y=val*{g},"
-        "scale={s}:{s}:flags=neighbor,"
-        "format=gray,setpts=PTS-STARTPTS[{l}]".format(src, g=GLOW_GAIN, s=size, l=label)
-    )
+        "crop=400:1:0:10,scale=1:1,format=gray,"
+        "setpts=PTS-STARTPTS[lb{}]".format(src, tag)
+    ]
+    outs = ["lb{}s{}".format(tag, k) for k in range(len(layers))]
+    parts.append("[lb{}]split={}{}".format(
+        tag, len(layers), "".join("[{}]".format(o) for o in outs)))
+
+    for k, (_off, _sig, thresh, gain) in enumerate(layers):
+        # No clip(): lutyuv clamps by itself, and commas inside clip() would be
+        # read as filter separators.
+        parts.append(
+            "[{i}]lutyuv=y=(val-{t})*{g},scale={s}:{s}:flags=neighbor,"
+            "format=gray[lvl{tag}_{k}]".format(
+                i=outs[k], t=thresh, g=gain, s=size, tag=tag, k=k))
+    return parts
 
 
 def add_name_to_disc(disc_path, label, tmp_dir, tag):
@@ -364,20 +387,27 @@ def build_filter(tracks, total, fps, idx):
         x = A_X if i == 0 else B_X
         disc = idx["disc"][i]
 
-        # Halo first, so the bubble sits cleanly on top of it and the glow
+        # Bloom first, so the bubble sits cleanly on top of it and the glow
         # reads as light spilling outwards rather than a ring drawn over.
-        if idx["glow"][i] is not None and t["has_audio"]:
+        if idx["glow"][i] and t["has_audio"]:
             gx = x + DIAMETER // 2 - GLOW_SIZE // 2
             gy = TOP_Y + DIAMETER // 2 - GLOW_SIZE // 2
-            parts.append(level_graph(i, GLOW_SIZE, "lvl{}".format(i)))
-            parts.append("[{}:v]split=2[gc{}][gs{}]".format(idx["glow"][i], i, i))
-            parts.append("[gs{0}]alphaextract[ga{0}]".format(i))
-            # Shape x loudness = how much of the halo shows this frame.
-            parts.append("[ga{0}][lvl{0}]blend=all_mode=multiply[gm{0}]".format(i))
-            parts.append("[gc{0}][gm{0}]alphamerge[glow{0}]".format(i))
-            parts.append("[{}][glow{}]overlay={}:{}:eof_action=pass[gw{}]".format(
-                stage, i, gx, gy, i))
-            stage = "gw{}".format(i)
+            parts.extend(level_graph(i, GLOW_SIZE, i, GLOW_LAYERS))
+
+            for k, src in enumerate(idx["glow"][i]):
+                parts.append("[{}:v]split=2[gc{}_{}][gs{}_{}]".format(
+                    src, i, k, i, k))
+                parts.append("[gs{0}_{1}]alphaextract[ga{0}_{1}]".format(i, k))
+                # Shape x loudness = how much of this layer shows this frame.
+                parts.append(
+                    "[ga{0}_{1}][lvl{0}_{1}]blend=all_mode=multiply[gm{0}_{1}]"
+                    .format(i, k))
+                parts.append("[gc{0}_{1}][gm{0}_{1}]alphamerge[glow{0}_{1}]"
+                             .format(i, k))
+                parts.append(
+                    "[{}][glow{}_{}]overlay={}:{}:eof_action=pass[gw{}_{}]"
+                    .format(stage, i, k, gx, gy, i, k))
+                stage = "gw{}_{}".format(i, k)
 
         # The disc carries both the fill and the ring, so an audio-only bubble
         # is never an empty hole in the canvas.
@@ -471,11 +501,13 @@ def main():
                                  (disc_b, args.b_name, "b")):
             add_name_to_disc(disc, (label or "").strip(), tmp, tag)
 
-        glow_a = os.path.join(tmp, "glow_a.png")
-        glow_b = os.path.join(tmp, "glow_b.png")
+        glow_files = [[], []]
         if not args.no_pulse:
-            make_glow(glow_a, GLOW_SIZE, GLOW_MID, GLOW_SIGMA, GOLD)
-            make_glow(glow_b, GLOW_SIZE, GLOW_MID, GLOW_SIGMA, NAVY_LIGHT)
+            for who, colour in ((0, GOLD), (1, NAVY_LIGHT)):
+                for k, (off, sigma, _t, _g) in enumerate(GLOW_LAYERS):
+                    f = os.path.join(tmp, "glow_{}_{}.png".format(who, k))
+                    make_glow(f, GLOW_SIZE, DIAMETER / 2.0 + off, sigma, colour)
+                    glow_files[who].append(f)
 
         logo = logo_path()
 
@@ -488,11 +520,13 @@ def main():
         cmd += ["-i", mask]; idx["mask"] = nxt; nxt += 1
         for d in (disc_a, disc_b):
             cmd += ["-i", d]; idx["disc"].append(nxt); nxt += 1
-        for g in (glow_a, glow_b):
-            if args.no_pulse:
-                idx["glow"].append(None)
-            else:
-                cmd += ["-i", g]; idx["glow"].append(nxt); nxt += 1
+        for who in (0, 1):
+            layer_idx = []
+            for f in glow_files[who]:
+                cmd += ["-i", f]
+                layer_idx.append(nxt)
+                nxt += 1
+            idx["glow"].append(layer_idx)
         if logo:
             cmd += ["-i", logo]; idx["logo"] = nxt; nxt += 1
 
