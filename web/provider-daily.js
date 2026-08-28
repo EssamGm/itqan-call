@@ -117,18 +117,27 @@ export class DailyProvider {
    * success; only failure surfaces, so a session is never lost silently while
    * the call still feels like an ordinary phone call.
    */
-  async startRecording({ timeoutMs = 20000 } = {}) {
-    if (!this.call) return false;
-
+  /** Wait until both people are in the room. Returns the participant list. */
+  async waitForPeer(timeoutMs = 15000) {
     const deadline = Date.now() + timeoutMs;
     let people = [];
     while (Date.now() < deadline) {
       people = Object.values(this.call.participants() || {})
         .filter((p) => p && p.session_id);
-      if (people.length >= 2) break;
+      if (people.length >= 2) return people;
       await new Promise((r) => setTimeout(r, 500));
     }
-    if (people.length < 2) return false;
+    return people;
+  }
+
+  async startRecording({ timeoutMs = 20000 } = {}) {
+    if (!this.call) return false;
+
+    const people = await this.waitForPeer(timeoutMs);
+    if (people.length < 2) {
+      this.lastRecordingError = "peer-absent";
+      return false;
+    }
 
     // startRecording resolves even when Daily refuses the request - the
     // refusal arrives as a recording-error event. Trusting the promise made

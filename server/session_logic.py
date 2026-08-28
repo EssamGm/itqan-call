@@ -123,6 +123,7 @@ def find_pending_call():
     if not isinstance(rooms, dict):
         return None
 
+    candidates = []
     for room_name, participants in rooms.items():
         if not isinstance(participants, list) or not participants:
             continue
@@ -131,14 +132,28 @@ def find_pending_call():
         if ROLE_COACH in roles:
             continue
         first = participants[0]
-        return {
-            "sessionId": room_name,
-            "roomUrl": "https://{}.daily.co/{}".format(_domain(), room_name),
-            "waiting": len(participants),
-            # So the coach sees who is calling before answering.
-            "name": first.get("userName") or first.get("user_name") or "",
-        }
-    return None
+        candidates.append((
+            max((p.get("joinTime") or "") for p in participants),
+            room_name,
+            first.get("userName") or first.get("user_name") or "",
+            len(participants),
+        ))
+
+    if not candidates:
+        return None
+
+    # Newest first. Presence lags behind reality, so a room a trainee already
+    # abandoned can still look occupied. Answering the stale one puts the two
+    # of them in different rooms - the call connects to nobody and nothing is
+    # recorded. Whoever joined most recently is the one actually waiting.
+    candidates.sort(reverse=True)
+    _, room_name, name, waiting = candidates[0]
+    return {
+        "sessionId": room_name,
+        "roomUrl": "https://{}.daily.co/{}".format(_domain(), room_name),
+        "waiting": waiting,
+        "name": name,
+    }
 
 
 def join_existing(room_name, role=ROLE_COACH, display_name=""):

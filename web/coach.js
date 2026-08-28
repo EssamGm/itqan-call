@@ -96,11 +96,21 @@ $("answer-btn").addEventListener("click", async () => {
       onJoined: async () => {
         show("screen-call");
         startTimer();
-        // Raw per-person recording cannot be auto-started by the token, so
-        // start it here. Silent on success; loud only if it fails.
-        if (!(await provider.startRecording())) {
-          warnNotRecording(provider.lastRecordingError);
+        // Per-person recording cannot be auto-started by the token, so start
+        // it here. Silent on success; loud only if it fails.
+        const ok = await provider.startRecording();
+        if (ok) return;
+
+        if (provider.lastRecordingError === "peer-absent") {
+          // The room was empty. Presence lags, so an abandoned room can still
+          // look occupied; sitting in it silently looks like a working call
+          // that records nothing, which is the worst possible outcome.
+          await endCall();
+          $("idle-status").classList.add("error");
+          $("idle-status").textContent = "لم يتصل المتدرب — حاول مرة أخرى";
+          return;
         }
+        warnNotRecording(provider.lastRecordingError);
       },
       onPeerLeft: () => endCall(),
       onError: () => endCall(),
