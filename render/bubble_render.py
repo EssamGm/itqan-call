@@ -78,6 +78,12 @@ VOICE_CLEANUP = (
 
 TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 
+GLOW_SIZE = DIAMETER + 120      # room for the halo to bloom outside the ring
+GLOW_MID = DIAMETER / 2.0 + 14  # sits just outside the bubble edge
+GLOW_SIGMA = 22.0               # falloff; wider reads as a softer breath
+GLOW_GAIN = 1.7                 # ordinary speech should glow clearly,
+                                # not only shouting
+
 LOGO_W = 280
 LOGO_Y = 880
 
@@ -241,6 +247,51 @@ def make_disc(path, diameter, fill, ring_color, thickness):
     ])
 
 
+def make_glow(path, size, mid_radius, sigma, color):
+    """
+    A soft coloured halo, used as the speaking indicator.
+
+    Drawn once as a still. Its opacity is driven per-frame from that speaker's
+    own audio, so the bubble breathes with their voice without anything having
+    to be generated frame by frame - which would be hopeless over a call
+    lasting half an hour.
+    """
+    r = size / 2.0
+    # Gaussian ring: brightest along mid_radius, fading smoothly both ways.
+    alpha = "clip(255*exp(-pow(hypot(X-{r},Y-{r})-{m},2)/{d}),0,255)".format(
+        r=r, m=mid_radius, d=2.0 * sigma * sigma)
+    run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", "color=c=0x{}:s={}x{}".format(color, size, size),
+        "-f", "lavfi", "-i", "color=c=black:s={0}x{0}".format(size),
+        "-filter_complex",
+        "[1:v]format=gray,geq=lum='" + alpha + "'[m];[0:v][m]alphamerge[o]",
+        "-map", "[o]", "-frames:v", "1", path,
+    ])
+
+
+def level_graph(src, size, label):
+    """
+    Turn one speaker's audio into a per-frame brightness value.
+
+    showvolume draws a meter whose length follows the signal; averaging that
+    whole bar down to a single pixel turns it into one number per frame, which
+    can then be blown up into a uniform field and used as an opacity mask.
+    Native ffmpeg throughout, so it costs almost nothing.
+    """
+    return (
+        "[{}:a]showvolume=r=25:b=0:w=400:h=20:f=0.9:dm=0:o=h,"
+        "crop=400:1:0:10,scale=1:1,"
+        # Lift the curve so conversational level reads as a clear glow rather
+        # than a hint; without it only the loudest moments show. No clip():
+        # lutyuv clamps by itself, and the commas inside clip() would be read
+        # as filter separators.
+        "lutyuv=y=val*{g},"
+        "scale={s}:{s}:flags=neighbor,"
+        "format=gray,setpts=PTS-STARTPTS[{l}]".format(src, g=GLOW_GAIN, s=size, l=label)
+    )
+
+
 def add_name_to_disc(disc_path, label, tmp_dir, tag):
     """
     Paint a name into the middle of a bubble.
@@ -313,6 +364,21 @@ def build_filter(tracks, total, fps, idx):
         x = A_X if i == 0 else B_X
         disc = idx["disc"][i]
 
+        # Halo first, so the bubble sits cleanly on top of it and the glow
+        # reads as light spilling outwards rather than a ring drawn over.
+        if idx["glow"][i] is not None and t["has_audio"]:
+            gx = x + DIAMETER // 2 - GLOW_SIZE // 2
+            gy = TOP_Y + DIAMETER // 2 - GLOW_SIZE // 2
+            parts.append(level_graph(i, GLOW_SIZE, "lvl{}".format(i)))
+            parts.append("[{}:v]split=2[gc{}][gs{}]".format(idx["glow"][i], i, i))
+            parts.append("[gs{0}]alphaextract[ga{0}]".format(i))
+            # Shape x loudness = how much of the halo shows this frame.
+            parts.append("[ga{0}][lvl{0}]blend=all_mode=multiply[gm{0}]".format(i))
+            parts.append("[gc{0}][gm{0}]alphamerge[glow{0}]".format(i))
+            parts.append("[{}][glow{}]overlay={}:{}:eof_action=pass[gw{}]".format(
+                stage, i, gx, gy, i))
+            stage = "gw{}".format(i)
+
         # The disc carries both the fill and the ring, so an audio-only bubble
         # is never an empty hole in the canvas.
         parts.append("[{}][{}:v]overlay={}:{}[d{}]".format(
@@ -359,6 +425,11 @@ def main():
     ap.add_argument("--b-offset", type=float, default=0.0)
     ap.add_argument("--fps", type=int, default=25)
     ap.add_argument("--encoder", default="auto", help="auto | libx264 | h264_nvenc")
+    ap.add_argument("--external-audio", default="",
+                    help="use this audio instead of mixing the two tracks; for "
+                         "comparing an outside enhancer against our own")
+    ap.add_argument("--no-pulse", action="store_true",
+                    help="static bubbles; no speaking halo")
     ap.add_argument("--no-cleanup", action="store_true",
                     help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
@@ -400,6 +471,12 @@ def main():
                                  (disc_b, args.b_name, "b")):
             add_name_to_disc(disc, (label or "").strip(), tmp, tag)
 
+        glow_a = os.path.join(tmp, "glow_a.png")
+        glow_b = os.path.join(tmp, "glow_b.png")
+        if not args.no_pulse:
+            make_glow(glow_a, GLOW_SIZE, GLOW_MID, GLOW_SIGMA, GOLD)
+            make_glow(glow_b, GLOW_SIZE, GLOW_MID, GLOW_SIGMA, NAVY_LIGHT)
+
         logo = logo_path()
 
         # Build the input list and record where each asset landed.
@@ -407,10 +484,15 @@ def main():
         cmd += ["-itsoffset", str(args.a_offset), "-i", args.a]
         cmd += ["-itsoffset", str(args.b_offset), "-i", args.b]
         nxt = 2
-        idx = {"mask": None, "disc": [], "logo": None}
+        idx = {"mask": None, "disc": [], "glow": [], "logo": None}
         cmd += ["-i", mask]; idx["mask"] = nxt; nxt += 1
         for d in (disc_a, disc_b):
             cmd += ["-i", d]; idx["disc"].append(nxt); nxt += 1
+        for g in (glow_a, glow_b):
+            if args.no_pulse:
+                idx["glow"].append(None)
+            else:
+                cmd += ["-i", g]; idx["glow"].append(nxt); nxt += 1
         if logo:
             cmd += ["-i", logo]; idx["logo"] = nxt; nxt += 1
 
@@ -448,12 +530,23 @@ def main():
         # Render the mix losslessly first, so it can be measured and then
         # mastered twice without stacking two lossy encodes on top of it.
         mix_wav = os.path.join(tmp, "mix.wav")
-        run(["ffmpeg", "-y", "-v", "error",
-             "-itsoffset", str(args.a_offset), "-i", args.a,
-             "-itsoffset", str(args.b_offset), "-i", args.b,
-             "-filter_complex", mix_graph, "-map", "[m]",
-             "-c:a", "pcm_s24le", "-ar", "48000", "-t", "{:.3f}".format(total),
-             mix_wav])
+        if args.external_audio:
+            # An outside enhancer supplies the mix; the per-speaker tracks are
+            # still read, because the speaking halo is driven from them.
+            if not os.path.isfile(args.external_audio):
+                sys.exit("error: no such file: " + args.external_audio)
+            sys.stderr.write("using external audio: {}
+".format(
+                os.path.basename(args.external_audio)))
+            run(["ffmpeg", "-y", "-v", "error", "-i", args.external_audio,
+                 "-c:a", "pcm_s24le", "-ar", "48000", mix_wav])
+        else:
+            run(["ffmpeg", "-y", "-v", "error",
+                 "-itsoffset", str(args.a_offset), "-i", args.a,
+                 "-itsoffset", str(args.b_offset), "-i", args.b,
+                 "-filter_complex", mix_graph, "-map", "[m]",
+                 "-c:a", "pcm_s24le", "-ar", "48000", "-t", "{:.3f}".format(total),
+                 mix_wav])
 
         measured_mix = measure_loudnorm(mix_wav)
 
