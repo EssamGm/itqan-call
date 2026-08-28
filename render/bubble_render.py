@@ -535,8 +535,7 @@ def main():
             # still read, because the speaking halo is driven from them.
             if not os.path.isfile(args.external_audio):
                 sys.exit("error: no such file: " + args.external_audio)
-            sys.stderr.write("using external audio: {}
-".format(
+            sys.stderr.write("using external audio: {}\n".format(
                 os.path.basename(args.external_audio)))
             run(["ffmpeg", "-y", "-v", "error", "-i", args.external_audio,
                  "-c:a", "pcm_s24le", "-ar", "48000", mix_wav])
