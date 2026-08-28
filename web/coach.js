@@ -1,12 +1,13 @@
 /*
- * Coach app — Essam's side.
+ * Coach app — Essam's side. Voice only.
  *
  * Polls for a waiting trainee and answers into their room. The in-call screen
- * is deliberately identical to the trainee's: plain, ordinary, no hint that
- * anything is being recorded.
+ * is deliberately identical to the trainee's: an ordinary voice call, with no
+ * hint that anything is being recorded.
  */
 
 import { DailyProvider } from "./provider-daily.js";
+import { COACH_NAME } from "./config.js";
 
 const provider = new DailyProvider();
 const $ = (id) => document.getElementById(id);
@@ -53,8 +54,7 @@ function stopTimer() {
 async function poll() {
   if (inCall) return;
   try {
-    const found = await provider.pendingCall();
-    setPending(found);
+    setPending(await provider.pendingCall());
     $("idle-status").classList.remove("error");
     $("idle-status").innerHTML = "&nbsp;";
   } catch (err) {
@@ -68,14 +68,12 @@ function setPending(found) {
   pending = found;
   const waiting = !!found;
   $("dot").classList.toggle("live", waiting);
-  $("idle-text").textContent = waiting ? "متدرب ينتظر" : "لا توجد مكالمات";
+  // Show who is calling, the way a phone shows a contact name.
+  $("idle-text").textContent = waiting
+    ? (found.name ? `${found.name} ينتظر` : "متدرب ينتظر")
+    : "لا توجد مكالمات";
   $("answer-btn").style.display = waiting ? "grid" : "none";
   $("answer-btn").classList.toggle("ringing", waiting);
-}
-
-function startPolling() {
-  poll();
-  if (!pollHandle) pollHandle = setInterval(poll, POLL_MS);
 }
 
 /* ----------------------------------------------------------------- answer */
@@ -85,20 +83,22 @@ $("answer-btn").addEventListener("click", async () => {
   const btn = $("answer-btn");
   btn.disabled = true;
   inCall = true;
+  $("peer-title").textContent = pending.name || "المتدرب";
 
   try {
-    await provider.answer(pending.sessionId);
+    await provider.answer(pending.sessionId, COACH_NAME);
     await provider.join({
-      onLocalTrack: (stream) => attach($("local"), stream, true),
-      onRemoteTrack: (stream) => attach($("remote"), stream, false),
+      onRemoteAudio: (stream) => {
+        const el = $("remote-audio");
+        el.srcObject = stream;
+        el.play().catch(() => {});
+      },
       onJoined: async () => {
         show("screen-call");
         startTimer();
-        // Raw-tracks cannot be auto-started by the token, so start it here.
-        // Silent on success; loud only if it fails, so a session is never
-        // lost without Essam knowing, while the call still feels ordinary.
-        const ok = await provider.startRecording();
-        if (!ok) warnNotRecording();
+        // Raw per-person recording cannot be auto-started by the token, so
+        // start it here. Silent on success; loud only if it fails.
+        if (!(await provider.startRecording())) warnNotRecording();
       },
       onPeerLeft: () => endCall(),
       onError: () => endCall(),
@@ -114,7 +114,7 @@ $("answer-btn").addEventListener("click", async () => {
 
 /** Only ever shown on the coach's screen, and only when recording failed. */
 function warnNotRecording() {
-  const stage = document.querySelector("#screen-call .stage");
+  const stage = document.querySelector("#screen-call .voice-stage");
   if (!stage || stage.querySelector(".rec-warning")) return;
   const el = document.createElement("div");
   el.className = "rec-warning";
@@ -122,27 +122,14 @@ function warnNotRecording() {
   stage.appendChild(el);
 }
 
-function attach(el, stream, muted) {
-  el.srcObject = stream;
-  el.muted = !!muted;
-  el.play().catch(() => {});
-}
-
 /* --------------------------------------------------------------- controls */
 
 let micOn = true;
-let camOn = true;
 
 $("btn-mic").addEventListener("click", () => {
   micOn = !micOn;
   provider.setMic(micOn);
   $("btn-mic").classList.toggle("off", !micOn);
-});
-
-$("btn-cam").addEventListener("click", () => {
-  camOn = !camOn;
-  provider.setCam(camOn);
-  $("btn-cam").classList.toggle("off", !camOn);
 });
 
 $("btn-hangup").addEventListener("click", () => endCall());
@@ -151,10 +138,11 @@ async function endCall() {
   if (!inCall) return;
   const seconds = stopTimer();
   await provider.leave().catch(() => {});
-  for (const id of ["local", "remote"]) $(id).srcObject = null;
-  micOn = camOn = true;
+  $("remote-audio").srcObject = null;
+  micOn = true;
   $("btn-mic").classList.remove("off");
-  $("btn-cam").classList.remove("off");
+  const warn = document.querySelector(".rec-warning");
+  if (warn) warn.remove();
   inCall = false;
   setPending(null);
   $("ended-duration").textContent = seconds > 0 ? `المدة ${fmt(seconds)}` : "";
@@ -168,4 +156,5 @@ $("back-btn").addEventListener("click", () => {
 
 /* ------------------------------------------------------------------ boot */
 
-startPolling();
+poll();
+pollHandle = setInterval(poll, POLL_MS);

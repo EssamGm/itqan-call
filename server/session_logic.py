@@ -126,20 +126,22 @@ def find_pending_call():
     for room_name, participants in rooms.items():
         if not isinstance(participants, list) or not participants:
             continue
-        names = [(p.get("userName") or p.get("user_name") or "").lower()
-                 for p in participants]
+        roles = [(p.get("userId") or p.get("user_id") or "") for p in participants]
         # Only offer rooms the coach has not already joined.
-        if any(ROLE_COACH in n for n in names):
+        if ROLE_COACH in roles:
             continue
+        first = participants[0]
         return {
             "sessionId": room_name,
             "roomUrl": "https://{}.daily.co/{}".format(_domain(), room_name),
             "waiting": len(participants),
+            # So the coach sees who is calling before answering.
+            "name": first.get("userName") or first.get("user_name") or "",
         }
     return None
 
 
-def join_existing(room_name, role=ROLE_COACH):
+def join_existing(room_name, role=ROLE_COACH, display_name=""):
     """Mint a token for a room that already exists, without creating one."""
     if not room_name or not str(room_name).replace("-", "").replace("_", "").isalnum():
         raise SessionError("invalid room")
@@ -147,8 +149,10 @@ def join_existing(room_name, role=ROLE_COACH):
     token = _post("/meeting-tokens", {
         "properties": {
             "room_name": room_name,
-            "user_name": role,
+            "user_id": role,
+            "user_name": (display_name or role)[:60],
             "is_owner": role == ROLE_COACH,
+            "start_video_off": True,
             "exp": int(time.time()) + ROOM_TTL_SECONDS,
         },
     })
@@ -156,7 +160,8 @@ def join_existing(room_name, role=ROLE_COACH):
         "sessionId": room_name,
         "roomUrl": "https://{}.daily.co/{}".format(_domain(), room_name),
         "token": token["token"],
-        "userName": role,
+        "role": role,
+        "userName": display_name or role,
     }
 
 
@@ -169,7 +174,7 @@ def _domain():
     return _DOMAIN_CACHE["name"]
 
 
-def create_session(role=ROLE_TRAINEE):
+def create_session(role=ROLE_TRAINEE, display_name=""):
     """
     Create a 1:1 room recording raw per-participant tracks, and mint a token.
 
@@ -186,10 +191,15 @@ def create_session(role=ROLE_TRAINEE):
         # "cloud", not "raw-tracks": raw-tracks refuses to run unless the
         # domain has its own S3 bucket attached, which would mean standing up
         # an AWS account and IAM role. Daily stores cloud recordings itself, so
-        # instead the coach app starts two concurrent cloud recordings, each
-        # framed on one participant. That yields the same thing the bubble
-        # renderer needs - one file per person - with no bucket to configure.
+        # instead the coach app starts two concurrent recordings, each capturing
+        # one participant. That yields the same thing the bubble renderer needs
+        # - one file per person - with no bucket to configure.
         "enable_recording": "cloud",
+        # Voice-only by design: this is a coaching call, and the published
+        # video shows named bubbles rather than faces. No camera is ever
+        # requested, so nothing has to be trusted to keep it switched off.
+        "start_video_off": True,
+        "enable_video_processing_ui": False,
         "max_participants": 2,
         "exp": expiry,
         "eject_at_room_exp": True,
@@ -212,13 +222,15 @@ def create_session(role=ROLE_TRAINEE):
         room = _post("/rooms", {"privacy": "private", "properties": props})
         recording = False
 
-    # No start_cloud_recording here: that property only applies to "cloud" and
-    # "cloud-audio-only" modes, not raw-tracks. Raw-tracks must be started
-    # explicitly by the client, which the coach app does on joining.
+    # user_id carries the role, user_name the human name shown in the finished
+    # video. Keeping them in separate fields means renaming a person never
+    # breaks role detection.
     token = _post("/meeting-tokens", {"properties": {
         "room_name": room["name"],
-        "user_name": role,
+        "user_id": role,
+        "user_name": (display_name or role)[:60],
         "is_owner": role == ROLE_COACH,
+        "start_video_off": True,
         "exp": expiry,
     }})
 
@@ -226,7 +238,8 @@ def create_session(role=ROLE_TRAINEE):
         "sessionId": room["name"],
         "roomUrl": room["url"],
         "token": token["token"],
-        "userName": role,
+        "role": role,
+        "userName": display_name or role,
         "expiresAt": expiry,
         "recording": recording,
     }

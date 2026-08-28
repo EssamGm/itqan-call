@@ -24,7 +24,8 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) if length else b"{}")
-            self._json(200, join_existing(body.get("sessionId"), "coach"))
+            self._json(200, join_existing(
+                body.get("sessionId"), "coach", body.get("name") or ""))
         except SessionError as e:
             self._json(502, {"error": str(e)})
         except Exception:

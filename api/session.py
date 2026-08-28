@@ -31,8 +31,9 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
-            role = (json.loads(raw or b"{}").get("role") or "trainee")
-            self._json(200, create_session(role))
+            body = json.loads(raw or b"{}")
+            self._json(200, create_session(
+                body.get("role") or "trainee", body.get("name") or ""))
         except SessionError as e:
             self._json(502, {"error": str(e)})
         except Exception:

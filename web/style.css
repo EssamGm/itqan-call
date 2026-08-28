@@ -133,56 +133,63 @@ button:not(:disabled):active { opacity: .8; }
   margin-bottom: 28px;
 }
 
-/* ---- in call: a plain, ordinary call screen -------------------------- */
-/* No bubbles, no overlays, nothing that hints at recording. The bubble
-   layout is produced afterwards, by the renderer, never shown live. */
+/* ---- in call: an ordinary voice call --------------------------------- */
+/* No video, no overlays, nothing that hints at recording. The named-bubble
+   layout is produced afterwards, by the renderer, and never shown live. */
 #screen-call { padding: 0; justify-content: stretch; }
-.stage { position: relative; flex: 1; width: 100%; background: #000; }
-.stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
-#selfview {
-  position: absolute;
-  top: calc(16px + env(safe-area-inset-top));
-  left: 16px;
-  width: 104px;
-  height: 148px;
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--elevated);
-  box-shadow: 0 4px 16px rgba(0,0,0,.45);
+
+.voice-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
 }
-.peer-name {
-  position: absolute;
-  top: calc(20px + env(safe-area-inset-top));
-  right: 20px;
+
+.avatar {
+  width: 176px;
+  height: 176px;
+  border-radius: 50%;
+  background: var(--elevated);
+  border: 2px solid var(--border);
+  display: grid;
+  place-items: center;
+}
+/* The gold square, per the icon spec: the mark alone, never the name. */
+.avatar-sq {
+  width: 46px;
+  height: 46px;
+  background: var(--gold);
+}
+
+.peer-title {
   font-family: Cairo, sans-serif;
-  font-weight: 700;
-  font-size: 17px;
-  text-shadow: 0 1px 6px rgba(0,0,0,.7);
+  font-weight: 800;
+  font-size: 27px;
+  margin: 0;
 }
 .timer {
-  position: absolute;
-  top: calc(46px + env(safe-area-inset-top));
-  right: 20px;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 6px rgba(0,0,0,.7);
+  margin: 0;
 }
+
 .controls {
   display: flex;
-  gap: 22px;
+  gap: 26px;
   justify-content: center;
-  padding: 22px 0 calc(30px + env(safe-area-inset-bottom));
-  background: var(--surface);
+  padding: 24px 0 calc(34px + env(safe-area-inset-bottom));
 }
 .ctl {
-  width: 62px; height: 62px;
+  width: 64px; height: 64px;
   border-radius: 50%;
   background: var(--elevated);
   display: grid; place-items: center;
   padding: 0;
 }
-.ctl svg { width: 26px; height: 26px; fill: var(--text); }
+.ctl svg { width: 27px; height: 27px; fill: var(--text); }
 .ctl.off { background: var(--text); }
 .ctl.off svg { fill: var(--surface); }
 .ctl.hangup { background: var(--danger); }
@@ -200,17 +207,14 @@ button:not(:disabled):active { opacity: .8; }
 }
 .idle-dot.live { background: var(--ok); }
 
-/* Coach screen only, and only when recording failed to start. */
+/* Coach screen only, and only when recording failed to start. It sits in the
+   normal flow under the timer; .voice-stage is not a positioned ancestor. */
 .rec-warning {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
   background: var(--danger);
   color: #fff;
   font-family: Cairo, sans-serif;
   font-weight: 700;
   font-size: 14px;
-  padding: 8px 16px;
+  padding: 8px 18px;
   border-radius: 999px;
 }

@@ -59,9 +59,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if path == "/api/session":
-                return self._json(200, create_session(body.get("role") or "trainee"))
+                return self._json(200, create_session(
+                    body.get("role") or "trainee", body.get("name") or ""))
             if path == "/api/answer":
-                return self._json(200, join_existing(body.get("sessionId"), "coach"))
+                return self._json(200, join_existing(
+                    body.get("sessionId"), "coach", body.get("name") or ""))
             return self._json(404, {"error": "not found"})
         except SessionError as e:
             self._json(502, {"error": str(e)})

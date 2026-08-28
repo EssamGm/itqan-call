@@ -1,11 +1,11 @@
 /*
- * Itqan call app — screen flow and controls.
+ * Itqan call app — trainee side. Voice only.
  *
  * Knows nothing about the transport vendor; it drives whichever CallProvider
  * it is handed. Swapping Daily for Zoom means changing the import below.
  */
 
-import { DailyProvider } from "./provider-daily.js";
+import { DailyProvider, ROLE_TRAINEE } from "./provider-daily.js";
 
 const provider = new DailyProvider();
 
@@ -29,9 +29,9 @@ function traineeName() {
 
 /* ------------------------------------------------------------------ timer */
 
-function fmt(totalSeconds) {
-  const m = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
-  const s = String(totalSeconds % 60).padStart(2, "0");
+function fmt(total) {
+  const m = String(Math.floor(total / 60)).padStart(2, "0");
+  const s = String(total % 60).padStart(2, "0");
   return `${m}:${s}`;
 }
 
@@ -47,7 +47,7 @@ function startTimer() {
 function stopTimer() {
   if (timerHandle) clearInterval(timerHandle);
   timerHandle = null;
-  return Math.floor((Date.now() - startedAt) / 1000);
+  return startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
 }
 
 /* ------------------------------------------------------------- name entry */
@@ -61,7 +61,6 @@ nameInput.addEventListener("input", () => {
 nameInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !nameSave.disabled) nameSave.click();
 });
-
 nameSave.addEventListener("click", () => {
   localStorage.setItem(NAME_KEY, nameInput.value.trim());
   goIdle();
@@ -88,11 +87,15 @@ $("consent-ok").addEventListener("click", async () => {
   status.textContent = "جارٍ الاتصال…";
 
   try {
-    // The name stays on this device; the server is told a role, nothing more.
-    await provider.createSession("trainee");
+    // The name now travels with the session: it is shown in this trainee's
+    // bubble in the published video, so it is no longer kept device-local.
+    await provider.createSession(ROLE_TRAINEE, traineeName());
     await provider.join({
-      onLocalTrack: (stream) => attach($("local"), stream, true),
-      onRemoteTrack: (stream) => attach($("remote"), stream, false),
+      onRemoteAudio: (stream) => {
+        const el = $("remote-audio");
+        el.srcObject = stream;
+        el.play().catch(() => {});
+      },
       onJoined: () => {
         show("screen-call");
         startTimer();
@@ -112,17 +115,9 @@ $("consent-ok").addEventListener("click", async () => {
   }
 });
 
-function attach(el, stream, muted) {
-  el.srcObject = stream;
-  el.muted = !!muted;
-  // Autoplay can still be refused; ignore rather than break the call.
-  el.play().catch(() => {});
-}
-
 /* --------------------------------------------------------- call: controls */
 
 let micOn = true;
-let camOn = true;
 
 $("btn-mic").addEventListener("click", () => {
   micOn = !micOn;
@@ -130,24 +125,14 @@ $("btn-mic").addEventListener("click", () => {
   $("btn-mic").classList.toggle("off", !micOn);
 });
 
-$("btn-cam").addEventListener("click", () => {
-  camOn = !camOn;
-  provider.setCam(camOn);
-  $("btn-cam").classList.toggle("off", !camOn);
-});
-
 $("btn-hangup").addEventListener("click", () => endCall());
 
 async function endCall() {
   const seconds = stopTimer();
   await provider.leave().catch(() => {});
-  for (const id of ["local", "remote"]) {
-    const el = $(id);
-    el.srcObject = null;
-  }
-  micOn = camOn = true;
+  $("remote-audio").srcObject = null;
+  micOn = true;
   $("btn-mic").classList.remove("off");
-  $("btn-cam").classList.remove("off");
   $("ended-duration").textContent = seconds > 0 ? `المدة ${fmt(seconds)}` : "";
   show("screen-ended");
 }
