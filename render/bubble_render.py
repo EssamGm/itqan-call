@@ -51,6 +51,8 @@ B_X = MARGIN + DIAMETER + GAP       # 560
 
 NAME_MAX_W = int(DIAMETER * 0.72)   # keep names clear of the circle's edge
 NAME_MAX_H = int(DIAMETER * 0.30)
+TARGET_LUFS = -16.0   # broadcast/podcast norm; both speakers are matched to it
+
 LOGO_W = 280
 LOGO_Y = 880
 
@@ -78,6 +80,22 @@ def probe(path):
     except (KeyError, TypeError, ValueError):
         dur = 0.0
     return {"duration": dur, "has_video": "video" in kinds, "has_audio": "audio" in kinds}
+
+
+def measure_loudness(path):
+    """Integrated loudness in LUFS, or None if it cannot be measured."""
+    p = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    val = None
+    for line in (p.stderr or "").splitlines():
+        s = line.strip()
+        if s.startswith("I:") and "LUFS" in s:
+            try:
+                val = float(s.split()[1])
+            except (IndexError, ValueError):
+                pass
+    return val
 
 
 def source_size(path):
@@ -331,11 +349,36 @@ def main():
         if logo:
             cmd += ["-i", logo]; idx["logo"] = nxt; nxt += 1
 
-        # Mix both uplinks. normalize=0 preserves natural levels in a
-        # conversation where only one person speaks at a time.
+        # Match the two speakers to each other before mixing.
+        #
+        # Different devices and distances put the two voices at different
+        # levels - a phone held close against a laptop across a desk can differ
+        # by several LU, which in a published recording means one person is
+        # persistently quieter. Normalising the finished mix cannot fix that;
+        # it lifts both together and preserves the imbalance.
+        #
+        # A measured fixed gain per track rather than per-track loudnorm: these
+        # recordings are mostly silence while the other person talks, and
+        # dynamic normalisation would pump that silence up between phrases.
         srcs = [i for i, t in enumerate(tracks) if t["has_audio"]]
-        amix = ("[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[amix]"
-                if len(srcs) == 2 else "[{}:a]anull[amix]".format(srcs[0]))
+        gains = {}
+        for i in srcs:
+            measured = measure_loudness((args.a, args.b)[i])
+            if measured is not None and measured > -70:
+                gains[i] = max(-12.0, min(12.0, TARGET_LUFS - measured))
+                sys.stderr.write("track {}: {:.1f} LUFS -> {:+.1f} dB\n".format(
+                    i, measured, gains[i]))
+
+        def leg(i):
+            g = gains.get(i)
+            return "[{0}:a]volume={1:.2f}dB[g{0}]".format(i, g) if g else \
+                   "[{0}:a]anull[g{0}]".format(i)
+
+        pre = ";".join(leg(i) for i in srcs)
+        if len(srcs) == 2:
+            amix = pre + ";[g0][g1]amix=inputs=2:duration=longest:normalize=0[amix]"
+        else:
+            amix = pre + ";[g{}]anull[amix]".format(srcs[0])
         # loudnorm resamples internally and emits 96kHz; force 48kHz back.
         norm = "anull" if args.no_loudnorm else "loudnorm=I=-16:TP=-1.5:LRA=11"
         chain = "[amix]" + norm + ",aresample=48000,asplit=2[aout_v][aout_a]"
