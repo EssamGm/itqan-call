@@ -29,6 +29,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arabic_text import render_text_png  # noqa: E402
+import captions as cap  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Brand - Etqan Brand Guidelines v1.1, dark mode surface.
@@ -91,12 +92,24 @@ TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 # eye catches from across a room in a way a brightness change never does.
 #
 # (offset beyond the bubble edge, softness, level needed to light, response)
+#
+# Thresholds are low and gains high on purpose: every syllable should move
+# something, so the frame reads as two people passing energy back and forth
+# rather than a light switching on for whoever happens to be louder. The outer
+# layers are wide enough that the two blooms meet in the middle, which is
+# wanted - the overlap is the conversation.
+# Response falls off with distance so the outer layers stay a glow rather than
+# a wash. At full strength they flooded the frame and buried the captions,
+# which defeats having captions at all.
 GLOW_LAYERS = [
-    (6,   10,   0, 2.6),   # rim: lights on any speech, defines the bubble
-    (54,  30,  40, 2.3),   # near bloom: normal conversation
-    (128, 58, 100, 2.9),   # far bloom: emphasis and louder moments
+    (8,   14,   0, 3.4),   # rim: any voice at all
+    (70,  40,   8, 2.6),   # near: ordinary speech
+    (170, 78,  28, 1.9),   # mid: reaches toward the other bubble
+    (300, 120, 60, 1.2),   # far: fills the frame on emphasis
 ]
-GLOW_SIZE = DIAMETER + 2 * 330  # canvas the layers are drawn on
+GLOW_SIZE = 1180                # layers are clipped to the canvas anyway
+
+CAPTION_Y = 640
 
 LOGO_W = 280
 LOGO_Y = 880
@@ -426,6 +439,11 @@ def build_filter(tracks, total, fps, idx):
                 stage, i, x, TOP_Y, i))
             stage = "v{}".format(i)
 
+    if idx.get("captions") is not None:
+        parts.append("[{}][{}:v]overlay=(W-w)/2:{}:eof_action=pass:shortest=0[cap]"
+                     .format(stage, idx["captions"], CAPTION_Y))
+        stage = "cap"
+
     if idx["logo"] is not None:
         # The logo PNG is rendered on the same surface colour as the canvas, so
         # its rectangle disappears into the background with no alpha needed.
@@ -458,6 +476,8 @@ def main():
     ap.add_argument("--external-audio", default="",
                     help="use this audio instead of mixing the two tracks; for "
                          "comparing an outside enhancer against our own")
+    ap.add_argument("--captions", action="store_true",
+                    help="transcribe both speakers and burn in coloured captions")
     ap.add_argument("--no-pulse", action="store_true",
                     help="static bubbles; no speaking halo")
     ap.add_argument("--no-cleanup", action="store_true",
@@ -509,6 +529,20 @@ def main():
                     make_glow(f, GLOW_SIZE, DIAMETER / 2.0 + off, sigma, colour)
                     glow_files[who].append(f)
 
+        caption_list = None
+        if args.captions:
+            import transcribe as tr
+            print("transcribing both speakers ...", file=sys.stderr)
+            per_track = [tr.transcribe(args.a), tr.transcribe(args.b)]
+            segs = tr.merge(per_track, [args.a_offset, args.b_offset],
+                            ["coach", "trainee"])
+            print("  {} caption lines".format(len(segs)), file=sys.stderr)
+            if segs:
+                caption_list = cap.build_caption_track(
+                    segs,
+                    {"coach": (0xC9, 0xA2, 0x27), "trainee": (0x8F, 0xB6, 0xE0)},
+                    tmp, total, args.fps)
+
         logo = logo_path()
 
         # Build the input list and record where each asset landed.
@@ -529,6 +563,10 @@ def main():
             idx["glow"].append(layer_idx)
         if logo:
             cmd += ["-i", logo]; idx["logo"] = nxt; nxt += 1
+        if caption_list:
+            # concat of stills: safe=0 because the paths are absolute.
+            cmd += ["-f", "concat", "-safe", "0", "-i", caption_list]
+            idx["captions"] = nxt; nxt += 1
 
         # Match the two speakers to each other before mixing.
         #

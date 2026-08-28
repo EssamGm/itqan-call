@@ -12,3 +12,6 @@ out/
 __pycache__/
 *.pyc
 .vercel/
+
+# Transcripts sit beside the audio and contain what people said
+*.transcript.json
