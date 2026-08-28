@@ -1,0 +1,216 @@
+/* Etqan Brand Guidelines v1.0 — dark mode surface. Shared by both apps. */
+:root {
+  --surface: #0B1A2A;
+  --elevated: #122943;
+  --border: #24374C;
+  --navy-soft: #1F4E79;
+  --navy-light: #3E6C99;
+  --gold: #C9A227;
+  --text: #F2F5F8;
+  --text-dim: #9AA6B5;
+  --danger: #B83227;
+  --ok: #1D7A6B;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--surface);
+  color: var(--text);
+  font-family: "IBM Plex Sans Arabic", system-ui, sans-serif;
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.screen {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+.screen.active { display: flex; }
+
+/* ---- brand mark ------------------------------------------------------ */
+.mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 40px;
+}
+.mark h1 {
+  font-family: Cairo, system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 40px;
+  margin: 0;
+}
+/* The accent is a solid square, never a circle or a dot. */
+.mark .sq {
+  width: 13px;
+  height: 13px;
+  background: var(--gold);
+  flex: none;
+  align-self: flex-end;
+  margin-bottom: 9px;
+}
+
+/* ---- forms and buttons ----------------------------------------------- */
+.prompt { font-size: 17px; color: var(--text-dim); margin: 0 0 20px; }
+
+input[type=text] {
+  width: 100%;
+  max-width: 320px;
+  padding: 15px 18px;
+  font-family: inherit;
+  font-size: 17px;
+  text-align: center;
+  color: var(--text);
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+}
+input[type=text]:focus { border-color: var(--navy-light); }
+
+button {
+  font-family: Cairo, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  border: none;
+  border-radius: 12px;
+  padding: 15px 32px;
+  color: var(--text);
+  background: var(--navy-soft);
+  cursor: pointer;
+  transition: opacity .15s ease;
+}
+button:disabled { opacity: .45; cursor: default; }
+button:not(:disabled):active { opacity: .8; }
+
+.greeting { font-size: 19px; margin: 0 0 8px; }
+.greeting b { font-family: Cairo, sans-serif; font-weight: 800; }
+.sub { font-size: 15px; color: var(--text-dim); margin: 0 0 44px; }
+
+/* ---- call / answer button -------------------------------------------- */
+.call-btn {
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  background: var(--ok);
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.call-btn svg { width: 44px; height: 44px; fill: #fff; }
+.call-btn.ringing { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(29,122,107,.55); }
+  70%      { box-shadow: 0 0 0 26px rgba(29,122,107,0); }
+}
+.call-label { margin-top: 18px; font-size: 15px; color: var(--text-dim); }
+
+/* ---- consent --------------------------------------------------------- */
+.consent {
+  max-width: 380px;
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-right: 3px solid var(--gold);
+  border-radius: 12px;
+  padding: 18px 20px;
+  font-size: 15px;
+  line-height: 1.9;
+  margin-bottom: 28px;
+}
+
+/* ---- in call: a plain, ordinary call screen -------------------------- */
+/* No bubbles, no overlays, nothing that hints at recording. The bubble
+   layout is produced afterwards, by the renderer, never shown live. */
+#screen-call { padding: 0; justify-content: stretch; }
+.stage { position: relative; flex: 1; width: 100%; background: #000; }
+.stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
+#selfview {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: 16px;
+  width: 104px;
+  height: 148px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--elevated);
+  box-shadow: 0 4px 16px rgba(0,0,0,.45);
+}
+.peer-name {
+  position: absolute;
+  top: calc(20px + env(safe-area-inset-top));
+  right: 20px;
+  font-family: Cairo, sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  text-shadow: 0 1px 6px rgba(0,0,0,.7);
+}
+.timer {
+  position: absolute;
+  top: calc(46px + env(safe-area-inset-top));
+  right: 20px;
+  font-size: 14px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 6px rgba(0,0,0,.7);
+}
+.controls {
+  display: flex;
+  gap: 22px;
+  justify-content: center;
+  padding: 22px 0 calc(30px + env(safe-area-inset-bottom));
+  background: var(--surface);
+}
+.ctl {
+  width: 62px; height: 62px;
+  border-radius: 50%;
+  background: var(--elevated);
+  display: grid; place-items: center;
+  padding: 0;
+}
+.ctl svg { width: 26px; height: 26px; fill: var(--text); }
+.ctl.off { background: var(--text); }
+.ctl.off svg { fill: var(--surface); }
+.ctl.hangup { background: var(--danger); }
+.ctl.hangup svg { fill: #fff; }
+
+.status { font-size: 15px; color: var(--text-dim); margin-top: 20px; min-height: 22px; }
+.error { color: var(--danger); }
+
+/* ---- coach: waiting indicator ---------------------------------------- */
+.idle-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--navy-light);
+  display: inline-block;
+  margin-inline-end: 8px;
+}
+.idle-dot.live { background: var(--ok); }
+
+/* Coach screen only, and only when recording failed to start. */
+.rec-warning {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--danger);
+  color: #fff;
+  font-family: Cairo, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 999px;
+}

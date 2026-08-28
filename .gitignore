@@ -1,0 +1,14 @@
+# Secrets live outside the repo entirely, at C:\Itqan\.env
+.env
+*.env
+
+# Recordings and renders are personal data - never commit them
+recordings/
+out/
+*.mp4
+*.m4a
+*.webm
+
+__pycache__/
+*.pyc
+.vercel/
