@@ -2,16 +2,21 @@
 """
 Itqan bubble renderer.
 
-Takes the two per-participant tracks recorded during a 1:1 coaching call and
+Takes the two per-participant recordings from a 1:1 coaching call and
 composites them into a square, publish-ready video: each speaker in their own
-circular bubble on the Etqan dark surface. Also emits a clean audio-only track
-for podcast-style publishing.
+circular bubble on the Etqan dark surface, with their name inside it. Also
+emits a clean audio-only track for podcast-style publishing.
+
+The calls are voice only, so a bubble normally holds a name rather than video.
+If a track does carry video (older recordings do), it fills the circle and the
+name sits underneath instead.
 
 Deliberately vendor-agnostic: it only cares that two media files exist. Nothing
 here knows or cares whether Daily, LiveKit or Zoom produced them.
 
 Usage:
-    python bubble_render.py --a essam.webm --b trainee.webm --out ../out/call-001
+    python bubble_render.py --a coach.m4a --b trainee.m4a \\
+        --a-name عصام --b-name راكان --out ../out/call-001
 """
 
 import argparse
@@ -22,33 +27,39 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from arabic_text import render_text_png  # noqa: E402
+
 # ---------------------------------------------------------------------------
-# Brand - Etqan Brand Guidelines v1.0 (Aug 2026), dark mode surface.
-# The gold is the unified #C9A227; the older #B8860B is retired.
+# Brand - Etqan Brand Guidelines v1.1, dark mode surface.
 # ---------------------------------------------------------------------------
 SURFACE = "0B1A2A"      # dark navy-black page surface
 GOLD = "C9A227"         # accent, coach bubble ring
 NAVY_LIGHT = "3E6C99"   # trainee bubble ring
+TEXT = "#F2F5F8"
 
 # Square 1:1 canvas geometry.
 CANVAS = 1080
 DIAMETER = 460
 MARGIN = 60
 GAP = 40
-RING = 7                # bubble ring thickness, px; 4 was invisible on a phone
-LOGO_W = 280            # reversed wordmark, centred under the bubbles
-LOGO_Y = 880
-CENTER_Y = 470          # bubbles sit slightly high, leaving room for labels
+RING = 7
+CENTER_Y = 470
 TOP_Y = CENTER_Y - DIAMETER // 2
 A_X = MARGIN                        # 60
 B_X = MARGIN + DIAMETER + GAP       # 560
+
+NAME_MAX_W = int(DIAMETER * 0.72)   # keep names clear of the circle's edge
+NAME_MAX_H = int(DIAMETER * 0.30)
+LOGO_W = 280
+LOGO_Y = 880
 
 
 def run(cmd, **kw):
     """Run a command, raising with ffmpeg's own stderr on failure."""
     p = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if p.returncode != 0:
-        tail = "\n".join(p.stderr.strip().splitlines()[-25:])
+        tail = "\n".join((p.stderr or "").strip().splitlines()[-25:])
         raise RuntimeError("command failed: " + " ".join(cmd[:3]) + "...\n" + tail)
     return p.stdout
 
@@ -69,39 +80,6 @@ def probe(path):
     return {"duration": dur, "has_video": "video" in kinds, "has_audio": "audio" in kinds}
 
 
-def detect_crop(path, duration):
-    """
-    Find the real picture area, discarding any letterbox/pillarbox bars.
-
-    Call platforms sometimes pad a widescreen camera into whatever frame size
-    was requested. Those black bars are baked into the file, and without this
-    they would survive into the circular crop and show as flat black wedges.
-    Returns an ffmpeg crop filter string, or None when the frame is already
-    all picture.
-    """
-    start = max(0.0, min(duration * 0.3, max(0.0, duration - 2.0)))
-    probe_cmd = [
-        "ffmpeg", "-v", "info", "-ss", "{:.2f}".format(start), "-i", path,
-        "-vf", "cropdetect=24:2:0", "-frames:v", "60", "-f", "null", "-",
-    ]
-    p = subprocess.run(probe_cmd, capture_output=True, text=True)
-    crops = [ln.split("crop=")[-1].strip()
-             for ln in p.stderr.splitlines() if "crop=" in ln]
-    if not crops:
-        return None
-    try:
-        w, h, x, y = (int(v) for v in crops[-1].split(":"))
-    except ValueError:
-        return None
-    if w <= 0 or h <= 0:
-        return None
-    # Ignore a couple of stray pixels; only act on real bars.
-    full_w, full_h = source_size(path)
-    if full_w and full_h and (full_w - w) < 8 and (full_h - h) < 8:
-        return None
-    return "crop={}:{}:{}:{}".format(w, h, x, y)
-
-
 def source_size(path):
     try:
         out = run([
@@ -114,38 +92,109 @@ def source_size(path):
         return None, None
 
 
+def detect_crop(path, duration):
+    """
+    Find the real picture area, discarding any letterbox/pillarbox bars.
+
+    Call platforms sometimes pad a widescreen camera into whatever frame size
+    was requested. Those bars are baked in, and without this they survive into
+    the circular crop as flat black wedges.
+    """
+    start = max(0.0, min(duration * 0.3, max(0.0, duration - 2.0)))
+    p = subprocess.run([
+        "ffmpeg", "-v", "info", "-ss", "{:.2f}".format(start), "-i", path,
+        "-vf", "cropdetect=24:2:0", "-frames:v", "60", "-f", "null", "-",
+    ], capture_output=True, text=True)
+    crops = [ln.split("crop=")[-1].strip()
+             for ln in (p.stderr or "").splitlines() if "crop=" in ln]
+    if not crops:
+        return None
+    try:
+        w, h, x, y = (int(v) for v in crops[-1].split(":"))
+    except ValueError:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    full_w, full_h = source_size(path)
+    if full_w and full_h and (full_w - w) < 8 and (full_h - h) < 8:
+        return None
+    return "crop={}:{}:{}:{}".format(w, h, x, y)
+
+
 def make_circle_mask(path, diameter):
     """One-frame antialiased white circle on black, used as an alpha mask."""
     r = diameter / 2.0
-    # clip() across a 1px band gives a soft, non-jagged edge.
     expr = "clip(255*({}-hypot(X-{},Y-{})),0,255)".format(r - 0.5, r, r)
     run([
         "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", "color=c=black:s={0}x{0}".format(diameter),
-        # Single-quote the expression: ffmpeg's parser strips the quotes, and
-        # without them the commas inside hypot() read as filter separators.
+        # Single-quote: ffmpeg's parser strips them, and without them the
+        # commas inside hypot() read as filter separators.
         "-vf", "format=gray,geq=lum='" + expr + "'",
         "-frames:v", "1", path,
     ])
 
 
-def make_ring(path, diameter, thickness, color):
-    """One-frame RGBA ring, drawn just outside the bubble edge."""
+def make_disc(path, diameter, fill, ring_color, thickness):
+    """A filled disc with a ring, so an empty bubble still reads as a bubble."""
     d = diameter + thickness * 2
     r = d / 2.0
     inner = r - thickness
-    # Antialiased annulus: opaque between `inner` and `r`.
-    alpha = "clip(255*min({}-hypot(X-{},Y-{}),hypot(X-{},Y-{})-{}),0,255)".format(
-        r - 0.5, r, r, r, r, inner - 0.5
-    )
+    ring_alpha = ("clip(255*min({}-hypot(X-{},Y-{}),hypot(X-{},Y-{})-{}),0,255)"
+                  .format(r - 0.5, r, r, r, r, inner - 0.5))
+    disc_alpha = "clip(255*({}-hypot(X-{},Y-{})),0,255)".format(inner - 0.5, r, r)
     run([
         "ffmpeg", "-y", "-v", "error",
-        "-f", "lavfi", "-i", "color=c=0x{}:s={}x{}".format(color, d, d),
+        "-f", "lavfi", "-i", "color=c=0x{}:s={}x{}".format(fill, d, d),
+        "-f", "lavfi", "-i", "color=c=black:s={0}x{0}".format(d),
+        "-f", "lavfi", "-i", "color=c=0x{}:s={}x{}".format(ring_color, d, d),
         "-f", "lavfi", "-i", "color=c=black:s={0}x{0}".format(d),
         "-filter_complex",
-        "[1:v]format=gray,geq=lum='" + alpha + "'[m];[0:v][m]alphamerge[o]",
+        "[1:v]format=gray,geq=lum='" + disc_alpha + "'[dm];"
+        "[0:v][dm]alphamerge[disc];"
+        "[3:v]format=gray,geq=lum='" + ring_alpha + "'[rm];"
+        "[2:v][rm]alphamerge[ring];"
+        "[disc][ring]overlay=0:0[o]",
         "-map", "[o]", "-frames:v", "1", path,
     ])
+
+
+def add_name_to_disc(disc_path, label, tmp_dir, tag):
+    """
+    Paint a name into the middle of a bubble.
+
+    Done here rather than as a separate ffmpeg overlay because the text is
+    rasterised onto a solid background, and overlaying that leaves a faintly
+    visible rectangle. Reading it back as an alpha mask and painting the brand
+    ink through it composites cleanly, with the antialiasing intact.
+    """
+    from PIL import Image
+
+    if not label:
+        return
+    text_png = os.path.join(tmp_dir, "text_{}.png".format(tag))
+    render_text_png(label, text_png, size=96, color="#FFFFFF", bg=0x000000)
+
+    with Image.open(text_png) as raw:
+        alpha = raw.convert("L")
+    if alpha.width > NAME_MAX_W or alpha.height > NAME_MAX_H:
+        scale = min(NAME_MAX_W / alpha.width, NAME_MAX_H / alpha.height)
+        alpha = alpha.resize(
+            (max(1, int(alpha.width * scale)), max(1, int(alpha.height * scale))),
+            Image.LANCZOS,
+        )
+
+    ink = Image.new("RGBA", alpha.size, tuple(int(TEXT[i:i + 2], 16)
+                                              for i in (1, 3, 5)) + (255,))
+    ink.putalpha(alpha)
+
+    with Image.open(disc_path) as d:
+        disc = d.convert("RGBA")
+    disc.alpha_composite(
+        ink,
+        ((disc.width - ink.width) // 2, (disc.height - ink.height) // 2),
+    )
+    disc.save(disc_path)
 
 
 def pick_encoder(requested):
@@ -167,54 +216,53 @@ def pick_encoder(requested):
     return "libx264"
 
 
-def logo_path():
-    """The reversed wordmark, rendered onto this exact surface colour."""
-    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "assets", "logo-reversed.png")
-    return p if os.path.isfile(p) else None
-
-
-def build_video_filter(a, b, total, fps, logo_idx=None):
+def build_filter(tracks, total, fps, idx):
     """
-    Filter graph: dark canvas, two circular bubbles with rings.
+    Compose the canvas.
 
-    Inputs are: 0=track A, 1=track B, 2=circle mask, 3=ring A, 4=ring B.
-    Missing video (camera off) degrades to a static ring, so an audio-only
-    trainee still renders rather than failing the whole job.
+    `idx` maps each overlay asset to its ffmpeg input index, so inputs can be
+    added or omitted (no logo, no name) without renumbering by hand.
     """
     parts = ["color=c=0x{}:s={}x{}:r={}:d={:.3f}[bg]".format(
         SURFACE, CANVAS, CANVAS, fps, total)]
     stage = "bg"
 
-    for idx, (src, x, has_video, ring_in) in enumerate(
-        [(0, A_X, a["has_video"], 3), (1, B_X, b["has_video"], 4)]
-    ):
-        # Ring first, so the bubble sits on top of its inner edge.
-        parts.append("[{}][{}:v]overlay={}:{}[r{}]".format(
-            stage, ring_in, x - RING, TOP_Y - RING, idx))
-        stage = "r{}".format(idx)
+    for i, t in enumerate(tracks):
+        x = A_X if i == 0 else B_X
+        disc = idx["disc"][i]
 
-        if has_video:
-            debar = (a, b)[idx].get("crop")
+        # The disc carries both the fill and the ring, so an audio-only bubble
+        # is never an empty hole in the canvas.
+        parts.append("[{}][{}:v]overlay={}:{}[d{}]".format(
+            stage, disc, x - RING, TOP_Y - RING, i))
+        stage = "d{}".format(i)
+
+        if t["has_video"]:
+            debar = (t.get("crop") + ",") if t.get("crop") else ""
             parts.append(
-                "[{0}:v]{4}scale={1}:{1}:force_original_aspect_ratio=increase,"
-                "crop={1}:{1},fps={2},format=rgba[c{3}]".format(
-                    src, DIAMETER, fps, idx, (debar + ",") if debar else "")
-            )
-            parts.append("[c{0}][2:v]alphamerge[m{0}]".format(idx))
-            parts.append("[{}][m{}]overlay={}:{}:eof_action=pass[s{}]".format(
-                stage, idx, x, TOP_Y, idx))
-            stage = "s{}".format(idx)
+                "[{0}:v]{1}scale={2}:{2}:force_original_aspect_ratio=increase,"
+                "crop={2}:{2},fps={3},format=rgba[c{4}]".format(
+                    i, debar, DIAMETER, fps, i))
+            parts.append("[c{0}][{1}:v]alphamerge[m{0}]".format(i, idx["mask"]))
+            parts.append("[{}][m{}]overlay={}:{}:eof_action=pass[v{}]".format(
+                stage, i, x, TOP_Y, i))
+            stage = "v{}".format(i)
 
-    if logo_idx is not None:
+    if idx["logo"] is not None:
         # The logo PNG is rendered on the same surface colour as the canvas, so
         # its rectangle disappears into the background with no alpha needed.
-        parts.append("[{}:v]scale={}:-1[logo]".format(logo_idx, LOGO_W))
+        parts.append("[{}:v]scale={}:-1[logo]".format(idx["logo"], LOGO_W))
         parts.append("[{}][logo]overlay=(W-w)/2:{}[wm]".format(stage, LOGO_Y))
         stage = "wm"
 
     parts.append("[{}]format=yuv420p[vout]".format(stage))
     return ";".join(parts)
+
+
+def logo_path():
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "assets", "logo-reversed.png")
+    return p if os.path.isfile(p) else None
 
 
 def main():
@@ -223,14 +271,13 @@ def main():
     ap.add_argument("--a", required=True, help="track A (coach)")
     ap.add_argument("--b", required=True, help="track B (trainee)")
     ap.add_argument("--out", required=True, help="output path without extension")
-    ap.add_argument("--a-offset", type=float, default=0.0,
-                    help="seconds to delay track A, to sync join times")
-    ap.add_argument("--b-offset", type=float, default=0.0,
-                    help="seconds to delay track B, to sync join times")
-    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--a-name", default="", help="name shown in bubble A")
+    ap.add_argument("--b-name", default="", help="name shown in bubble B")
+    ap.add_argument("--a-offset", type=float, default=0.0)
+    ap.add_argument("--b-offset", type=float, default=0.0)
+    ap.add_argument("--fps", type=int, default=25)
     ap.add_argument("--encoder", default="auto", help="auto | libx264 | h264_nvenc")
-    ap.add_argument("--no-loudnorm", action="store_true",
-                    help="skip broadcast loudness normalisation")
+    ap.add_argument("--no-loudnorm", action="store_true")
     args = ap.parse_args()
 
     for p in (args.a, args.b):
@@ -239,17 +286,18 @@ def main():
     if not shutil.which("ffmpeg"):
         sys.exit("error: ffmpeg not found on PATH")
 
-    a, b = probe(args.a), probe(args.b)
-    if not (a["has_audio"] or b["has_audio"]):
+    tracks = [probe(args.a), probe(args.b)]
+    if not any(t["has_audio"] for t in tracks):
         sys.exit("error: neither track has audio - nothing to publish")
 
-    for track, path in ((a, args.a), (b, args.b)):
-        track["crop"] = detect_crop(path, track["duration"]) if track["has_video"] else None
-        if track["crop"]:
+    for t, path in zip(tracks, (args.a, args.b)):
+        t["crop"] = detect_crop(path, t["duration"]) if t["has_video"] else None
+        if t["crop"]:
             sys.stderr.write("removing letterbox from {}: {}\n".format(
-                os.path.basename(path), track["crop"]))
+                os.path.basename(path), t["crop"]))
 
-    total = max(args.a_offset + a["duration"], args.b_offset + b["duration"])
+    total = max(args.a_offset + tracks[0]["duration"],
+                args.b_offset + tracks[1]["duration"])
     if total <= 0:
         sys.exit("error: could not determine a positive duration")
 
@@ -257,28 +305,42 @@ def main():
     tmp = tempfile.mkdtemp(prefix="itqan-render-")
     try:
         mask = os.path.join(tmp, "mask.png")
-        ring_a = os.path.join(tmp, "ring_a.png")
-        ring_b = os.path.join(tmp, "ring_b.png")
+        disc_a = os.path.join(tmp, "disc_a.png")
+        disc_b = os.path.join(tmp, "disc_b.png")
         make_circle_mask(mask, DIAMETER)
-        make_ring(ring_a, DIAMETER, RING, GOLD)
-        make_ring(ring_b, DIAMETER, RING, NAVY_LIGHT)
+        make_disc(disc_a, DIAMETER, "122943", GOLD, RING)
+        make_disc(disc_b, DIAMETER, "122943", NAVY_LIGHT, RING)
+
+        # Shaped via HarfBuzz, not ffmpeg drawtext: drawtext maps Arabic onto
+        # the deprecated Presentation Forms block and drops letters.
+        for disc, label, tag in ((disc_a, args.a_name, "a"),
+                                 (disc_b, args.b_name, "b")):
+            add_name_to_disc(disc, (label or "").strip(), tmp, tag)
+
+        logo = logo_path()
+
+        # Build the input list and record where each asset landed.
+        cmd = ["ffmpeg", "-y", "-v", "error", "-stats"]
+        cmd += ["-itsoffset", str(args.a_offset), "-i", args.a]
+        cmd += ["-itsoffset", str(args.b_offset), "-i", args.b]
+        nxt = 2
+        idx = {"mask": None, "disc": [], "logo": None}
+        cmd += ["-i", mask]; idx["mask"] = nxt; nxt += 1
+        for d in (disc_a, disc_b):
+            cmd += ["-i", d]; idx["disc"].append(nxt); nxt += 1
+        if logo:
+            cmd += ["-i", logo]; idx["logo"] = nxt; nxt += 1
 
         # Mix both uplinks. normalize=0 preserves natural levels in a
         # conversation where only one person speaks at a time.
-        audio_srcs = [i for i, t in enumerate((a, b)) if t["has_audio"]]
-        if len(audio_srcs) == 2:
-            amix = "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[amix]"
-        else:
-            amix = "[{}:a]anull[amix]".format(audio_srcs[0])
-        # asplit because a filter output label may only be consumed once, and
-        # the same mixed audio feeds both the video and the audio-only file.
-        # loudnorm resamples internally and emits 96kHz; force it back to the
-        # 48kHz every platform expects, so files are not needlessly large.
+        srcs = [i for i, t in enumerate(tracks) if t["has_audio"]]
+        amix = ("[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[amix]"
+                if len(srcs) == 2 else "[{}:a]anull[amix]".format(srcs[0]))
+        # loudnorm resamples internally and emits 96kHz; force 48kHz back.
         norm = "anull" if args.no_loudnorm else "loudnorm=I=-16:TP=-1.5:LRA=11"
         chain = "[amix]" + norm + ",aresample=48000,asplit=2[aout_v][aout_a]"
-        logo = logo_path()
-        filt = (build_video_filter(a, b, total, args.fps, 5 if logo else None)
-                + ";" + amix + ";" + chain)
+
+        filt = build_filter(tracks, total, args.fps, idx) + ";" + amix + ";" + chain
 
         encoder = pick_encoder(args.encoder)
         quality = (["-cq", "23", "-preset", "p5"] if encoder == "h264_nvenc"
@@ -288,14 +350,7 @@ def main():
         audio_out = args.out + ".m4a"
         dur = "{:.3f}".format(total)
 
-        cmd = ["ffmpeg", "-y", "-v", "error", "-stats"]
-        cmd += ["-itsoffset", str(args.a_offset), "-i", args.a]
-        cmd += ["-itsoffset", str(args.b_offset), "-i", args.b]
-        cmd += ["-i", mask, "-i", ring_a, "-i", ring_b]
-        if logo:
-            cmd += ["-i", logo]
         cmd += ["-filter_complex", filt]
-        # Two outputs from one decode pass: square video, and clean audio.
         cmd += ["-map", "[vout]", "-map", "[aout_v]", "-c:v", encoder] + quality
         cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 "-t", dur, video_out]

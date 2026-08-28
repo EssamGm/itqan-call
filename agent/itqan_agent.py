@@ -55,9 +55,21 @@ INSTANCE_TRAINEE = "5c0ac400-0000-4000-8000-000000000002"
 POLL_SECONDS = 60
 
 
+# The Windows console defaults to cp1252, which cannot encode Arabic names and
+# would abort the run mid-render. Force UTF-8 and never let logging be fatal.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
+
 def log(msg):
     line = "[{}] {}".format(time.strftime("%Y-%m-%d %H:%M:%S"), msg)
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "replace").decode("ascii"), flush=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     with open(os.path.join(LOG_DIR, "agent.log"), "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
@@ -115,6 +127,28 @@ def role_of(rec):
     return None
 
 
+def names_for_room(room):
+    """
+    Look up who was in this call, so their names can go in the bubbles.
+
+    Tokens carry the role in user_id and the human name in user_name, so a
+    rename never breaks role detection. Falls back to the role word if Daily
+    has already aged the session out.
+    """
+    found = {}
+    try:
+        sessions = api("/meetings?room={}".format(room)).get("data", [])
+    except urllib.error.HTTPError:
+        return found
+    for s in sessions:
+        for p in s.get("participants", []):
+            role = p.get("user_id") or p.get("userId") or ""
+            name = p.get("user_name") or p.get("userName") or ""
+            if role in ("coach", "trainee") and name and role not in found:
+                found[role] = name
+    return found
+
+
 def assign_roles(pair):
     """Return (coach_rec, trainee_rec), guessing by start order if needed."""
     tagged = {role_of(r): r for r in pair if role_of(r)}
@@ -143,7 +177,7 @@ def process_pair(room, pair, done):
         if not url:
             log("  no download link for the {} recording".format(role))
             return False
-        dest = os.path.join(RAW_DIR, "{}_{}.mp4".format(rec["id"], role))
+        dest = os.path.join(RAW_DIR, "{}_{}.m4a".format(rec["id"], role))
         size = download(url, dest)
         local[role] = dest
         starts[role] = float(rec.get("start_ts") or 0)
@@ -153,15 +187,23 @@ def process_pair(room, pair, done):
     base = min(starts.values())
     out_base = os.path.join(PUB_DIR, time.strftime("%Y-%m-%d_") + room)
 
+    names = names_for_room(room)
+    log("  names: coach={} trainee={}".format(
+        names.get("coach", "-"), names.get("trainee", "-")))
+
     cmd = [
         sys.executable, RENDERER,
         "--a", local["coach"], "--b", local["trainee"],
+        "--a-name", names.get("coach", ""),
+        "--b-name", names.get("trainee", ""),
         "--a-offset", "{:.3f}".format(starts["coach"] - base),
         "--b-offset", "{:.3f}".format(starts["trainee"] - base),
         "--out", out_base,
     ]
     log("  rendering ...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", env=env)
     if result.returncode != 0:
         log("  render FAILED - raw files kept for retry\n" + (result.stderr or "")[-800:])
         return False
