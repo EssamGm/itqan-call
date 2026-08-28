@@ -1,9 +1,9 @@
 {
-  "id": "/coach.html?app=coach",
-  "name": "إتقان — المدرب",
-  "short_name": "إتقان المدرب",
-  "start_url": "/coach.html",
-  "scope": "/",
+  "id": "/t/",
+  "name": "إتقان",
+  "short_name": "إتقان",
+  "start_url": "/t/",
+  "scope": "/t/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0B1A2A",
@@ -12,25 +12,25 @@
   "dir": "rtl",
   "icons": [
     {
-      "src": "icons/icon-192.png",
+      "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icons/icon-512.png",
+      "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icons/maskable-192.png",
+      "src": "/icons/maskable-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "icons/maskable-512.png",
+      "src": "/icons/maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

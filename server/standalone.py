@@ -29,6 +29,11 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # BaseHTTPRequestHandler answers HTTP/1.0 by default, which closes the
+    # connection per request. HTTP/1.1 keeps them alive, which matters once a
+    # page pulls a dozen assets. Content-Length is always set, so this is safe.
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=WEB_DIR, **kw)
 

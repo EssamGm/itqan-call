@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B1A2A">
+<link rel="manifest" href="manifest.webmanifest">
+<title>إتقان — المدرب</title>
+<link rel="icon" href="/icons/icon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@700;800;900&family=IBM+Plex+Sans+Arabic:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Idle: waiting for a trainee to call. -->
+<section id="screen-idle" class="screen active">
+  <div class="mark"><h1>إتقان</h1><span class="sq"></span></div>
+  <p class="greeting">أهلاً عصام</p>
+  <p class="sub"><span class="idle-dot" id="dot"></span><span id="idle-text">لا توجد مكالمات</span></p>
+  <button class="call-btn" id="answer-btn" aria-label="رد" style="display:none">
+    <svg viewBox="0 0 24 24"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .7-.2 1l-2.3 2.2z"/></svg>
+  </button>
+  <p class="status" id="idle-status">&nbsp;</p>
+  <button id="enable-push" class="ghost" style="display:none">تفعيل التنبيهات</button>
+</section>
+
+<!-- In call: identical to the trainee's plain voice screen. -->
+<section id="screen-call" class="screen">
+  <div class="voice-stage">
+    <div class="avatar"><span class="avatar-sq"></span></div>
+    <p class="peer-title" id="peer-title">المتدرب</p>
+    <p class="timer" id="timer">00:00</p>
+  </div>
+  <div class="controls">
+    <button class="ctl" id="btn-mic" aria-label="كتم الصوت">
+      <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V22h2v-3.1A7 7 0 0 0 19 12h-2z"/></svg>
+    </button>
+    <button class="ctl hangup" id="btn-hangup" aria-label="إنهاء">
+      <svg viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.7v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.98.98 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .27-.11.52-.29.7l-2.48 2.46c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28a11.27 11.27 0 0 0-2.66-1.85.996.996 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+    </button>
+  </div>
+  <audio id="remote-audio" autoplay></audio>
+</section>
+
+<!-- After hanging up. -->
+<section id="screen-ended" class="screen">
+  <div class="mark"><h1>إتقان</h1><span class="sq"></span></div>
+  <p class="greeting">انتهت المكالمة</p>
+  <p class="sub" id="ended-duration"></p>
+  <button id="back-btn">رجوع</button>
+</section>
+
+<script src="https://unpkg.com/@daily-co/daily-js"></script>
+<script type="module" src="/coach.js"></script>
+<script>
+  if ("serviceWorker" in navigator) {
+    addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+  }
+</script>
+</body>
+</html>

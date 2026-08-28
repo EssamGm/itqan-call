@@ -1,3 +1,5 @@
+// GENERATED from sw-core.js by assets/make_sw.py - do not edit here.
+
 /*
  * Service worker.
  *
@@ -36,27 +38,27 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon: "icons/icon-192.png",
-      badge: "icons/icon-192.png",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
       tag: "itqan-incoming-call",   // a second ring replaces the first
       renotify: true,
       requireInteraction: true,     // stays until answered or dismissed
       vibrate: [200, 100, 200, 100, 200],
-      data: { url: data.url || "/coach.html" },
+      data: { url: data.url || "/c/" },
     })
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || "/coach.html";
+  const target = (event.notification.data && event.notification.data.url) || "/c/";
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true })
       .then((windows) => {
         // Focus the coach app if it is already open rather than stacking tabs.
         for (const w of windows) {
-          if (w.url.includes("coach") && "focus" in w) return w.focus();
+          if (w.url.includes("/c/") && "focus" in w) return w.focus();
         }
         return self.clients.openWindow(target);
       })

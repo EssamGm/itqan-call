@@ -14,10 +14,10 @@ for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
 )
 set LANIP=%LANIP: =%
 
-start "" http://localhost:8000/coach.html
+start "" http://localhost:8000/c/
 
-echo   You  (coach)   : http://localhost:8000/coach.html
-echo   Trainee, phone : http://%LANIP%:8000/index.html
+echo   You  (coach)   : http://localhost:8000/c/
+echo   Trainee, phone : http://%LANIP%:8000/t/
 echo.
 echo   Leave this window open during calls. Close it to stop.
 echo.
