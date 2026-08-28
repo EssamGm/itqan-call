@@ -125,14 +125,35 @@ $("btn-mic").addEventListener("click", () => {
   $("btn-mic").classList.toggle("off", !micOn);
 });
 
+/**
+ * Speaker toggle: mutes the incoming audio on this device only.
+ *
+ * The other side keeps talking and the recording is unaffected - each person's
+ * audio is captured from their own uplink, so muting your speaker never
+ * touches what gets published.
+ */
+let speakerOn = true;
+
+$("btn-speaker").addEventListener("click", () => {
+  speakerOn = !speakerOn;
+  const el = $("remote-audio");
+  el.muted = !speakerOn;
+  if (speakerOn) el.play().catch(() => {});
+  $("btn-speaker").classList.toggle("off", !speakerOn);
+});
+
 $("btn-hangup").addEventListener("click", () => endCall());
 
 async function endCall() {
   const seconds = stopTimer();
   await provider.leave().catch(() => {});
-  $("remote-audio").srcObject = null;
+  const audio = $("remote-audio");
+  audio.srcObject = null;
+  audio.muted = false;   // do not carry a muted speaker into the next call
   micOn = true;
+  speakerOn = true;
   $("btn-mic").classList.remove("off");
+  $("btn-speaker").classList.remove("off");
   $("ended-duration").textContent = seconds > 0 ? `المدة ${fmt(seconds)}` : "";
   show("screen-ended");
 }

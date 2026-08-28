@@ -190,10 +190,28 @@ button:not(:disabled):active { opacity: .8; }
   padding: 0;
 }
 .ctl svg { width: 27px; height: 27px; fill: var(--text); }
-.ctl.off { background: var(--text); }
-.ctl.off svg { fill: var(--surface); }
 .ctl.hangup { background: var(--danger); }
 .ctl.hangup svg { fill: #fff; }
+
+/* A disabled control is struck through, not recoloured. An inverted button
+   only tells you something differs; it never says which state is the working
+   one. A line through the icon reads the same way it does on a road sign. */
+.ctl { position: relative; }
+.ctl.off::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 74%;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--text);
+  /* A ring in the button's own colour lifts the line off the icon beneath,
+     so it stays legible instead of merging into the glyph. */
+  box-shadow: 0 0 0 2.5px var(--elevated);
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+.ctl.off svg { opacity: .55; }
 
 .status { font-size: 15px; color: var(--text-dim); margin-top: 20px; min-height: 22px; }
 .error { color: var(--danger); }
