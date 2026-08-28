@@ -44,9 +44,25 @@ def _env(name, default=""):
 VAPID_SUBJECT_DEFAULT = "mailto:essamksa16@yahoo.com"
 
 
+# Vercel injects different names depending on how the store was attached:
+# the Upstash marketplace integration uses UPSTASH_*, the older Vercel KV
+# integration uses KV_*. Accept either so the setup cannot fail on a label.
+_STORE_VARS = (
+    ("UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"),
+    ("KV_REST_API_URL", "KV_REST_API_TOKEN"),
+)
+
+
+def _store_credentials():
+    for url_var, token_var in _STORE_VARS:
+        url, token = _env(url_var), _env(token_var)
+        if url and token:
+            return url.rstrip("/"), token
+    return None, None
+
+
 def _upstash(path, body=None):
-    url = _env("UPSTASH_REDIS_REST_URL").rstrip("/")
-    token = _env("UPSTASH_REDIS_REST_TOKEN")
+    url, token = _store_credentials()
     if not url or not token:
         return None
     req = urllib.request.Request(
@@ -85,6 +101,23 @@ def load_subscription():
 
 def public_key():
     return _env("VAPID_PUBLIC_KEY")
+
+
+def config_status():
+    """
+    Report which pieces of the push setup are in place.
+
+    Reports presence only, never values, so it is safe to read from a browser.
+    Exists because the setup spans two systems and a missing piece is otherwise
+    invisible: notifications simply never arrive, with nothing to point at.
+    """
+    url, token = _store_credentials()
+    return {
+        "publicKey": bool(_env("VAPID_PUBLIC_KEY")),
+        "privateKey": bool(_env("VAPID_PRIVATE_KEY")),
+        "storage": bool(url and token),
+        "subscribed": bool(load_subscription()),
+    }
 
 
 def notify(title, body, url="/coach.html"):

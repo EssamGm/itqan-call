@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_logic import (  # noqa: E402
     SessionError, create_session, find_pending_call, join_existing,
 )
-from push import public_key, save_subscription  # noqa: E402
+from push import config_status, public_key, save_subscription  # noqa: E402
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
@@ -54,7 +54,7 @@ class Handler(SimpleHTTPRequestHandler):
             except SessionError as e:
                 return self._json(502, {"error": str(e)})
         if path == "/api/subscribe":
-            return self._json(200, {"publicKey": public_key()})
+            return self._json(200, dict(config_status(), publicKey=public_key()))
         return super().do_GET()
 
     def do_POST(self):

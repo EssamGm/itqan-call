@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server")
 )
-from push import public_key, save_subscription  # noqa: E402
+from push import config_status, public_key, save_subscription  # noqa: E402
 
 
 class handler(BaseHTTPRequestHandler):
@@ -27,7 +27,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        self._json(200, {"publicKey": public_key()})
+        self._json(200, dict(config_status(), publicKey=public_key()))
 
     def do_POST(self):
         try:
