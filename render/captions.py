@@ -18,15 +18,23 @@ from PIL import Image, ImageDraw
 
 from arabic_text import render_text_png
 
-PANEL_W = 880
-PANEL_H = 190
-RADIUS = 22
+PANEL_W = 820
+PANEL_H = 132
+RADIUS = 16
 
-PANEL_FILL = (18, 41, 67, 235)     # elevated surface, slightly transparent
-PANEL_EDGE = (36, 55, 76, 255)     # border
+# White panel. Being opaque is the point as much as the colour: it blocks the
+# speaking bloom, so the words stay readable however loud the moment gets.
+PANEL_FILL = (255, 255, 255, 250)
+PANEL_EDGE = (226, 230, 236, 255)
 
-FONT_SIZE = 46
-LINE_GAP = 12
+# Speaker colours, measured against white rather than chosen by eye. The brand
+# gold reaches only 2.4:1 on white, which is unreadable; these clear the 4.5:1
+# floor for body text while still reading as gold and blue.
+COACH_INK = (0x8F, 0x6A, 0x08)      # 5.0:1
+TRAINEE_INK = (0x1F, 0x4E, 0x79)    # 8.7:1
+
+FONT_SIZE = 34
+LINE_GAP = 8
 MAX_LINES = 2
 
 
@@ -70,7 +78,7 @@ def render_caption(text, colour, out_path, tmp_dir, tag):
     d.rounded_rectangle([0, 0, PANEL_W - 1, PANEL_H - 1], radius=RADIUS,
                         fill=PANEL_FILL, outline=PANEL_EDGE, width=2)
 
-    lines = _wrap(text, 42)
+    lines = _wrap(text, 52)
     if not lines:
         return False
 
@@ -78,8 +86,8 @@ def render_caption(text, colour, out_path, tmp_dir, tag):
     for i, line in enumerate(lines):
         img = _text_image(line, FONT_SIZE, colour, tmp_dir, "{}_{}".format(tag, i))
         # Shrink a line that still overruns rather than letting it clip.
-        if img.width > PANEL_W - 60:
-            scale = (PANEL_W - 60) / img.width
+        if img.width > PANEL_W - 48:
+            scale = (PANEL_W - 48) / img.width
             img = img.resize((int(img.width * scale), max(1, int(img.height * scale))),
                              Image.LANCZOS)
         imgs.append(img)

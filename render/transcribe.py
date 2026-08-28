@@ -33,6 +33,32 @@ def _model():
     return _MODEL
 
 
+def _is_hallucination(seg, text):
+    """
+    Reject text invented out of near-silence.
+
+    Each track is silent for however long the other person is talking, and that
+    is exactly where a transcriber starts hearing things - typically a burst of
+    repeated syllables over a fraction of a second. Real speech is neither that
+    short nor that repetitive.
+    """
+    duration = float(seg.end) - float(seg.start)
+    if duration < 0.4:
+        return True
+
+    # Deliberately not filtering on no_speech_prob. It is reported per decode
+    # window rather than per segment, so a whole run of clear speech can carry
+    # the same high value - filtering on it threw away thirteen good lines out
+    # of thirty-one on a real call.
+    tokens = [t for t in text.replace(",", " ").split() if t]
+    if len(tokens) >= 4:
+        distinct = len(set(t.lower().strip(".,!?") for t in tokens))
+        # "ei ei ai ai ai ai" and friends: many words, almost no vocabulary.
+        if distinct <= max(2, len(tokens) // 4):
+            return True
+    return False
+
+
 def transcribe(path, language=None, cache=True):
     """
     Return [{start, end, text}] for one audio file.
@@ -62,8 +88,9 @@ def transcribe(path, language=None, cache=True):
     out = []
     for s in segments:
         text = (s.text or "").strip()
-        if text:
-            out.append({"start": float(s.start), "end": float(s.end), "text": text})
+        if not text or _is_hallucination(s, text):
+            continue
+        out.append({"start": float(s.start), "end": float(s.end), "text": text})
 
     if cache:
         try:

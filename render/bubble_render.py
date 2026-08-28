@@ -46,11 +46,11 @@ TEXT = "#F2F5F8"
 # speaking bloom somewhere to expand into. A big static circle reads as a
 # placeholder; a small one surrounded by movement reads as alive.
 CANVAS = 1080
-DIAMETER = 300
-MARGIN = 130
-GAP = 220
-RING = 6
-CENTER_Y = 450
+DIAMETER = 240
+MARGIN = 140
+GAP = 320
+RING = 5
+CENTER_Y = 310
 TOP_Y = CENTER_Y - DIAMETER // 2
 A_X = MARGIN                        # 130
 B_X = MARGIN + DIAMETER + GAP       # 650
@@ -102,17 +102,17 @@ TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 # a wash. At full strength they flooded the frame and buried the captions,
 # which defeats having captions at all.
 GLOW_LAYERS = [
-    (8,   14,   0, 3.4),   # rim: any voice at all
-    (70,  40,   8, 2.6),   # near: ordinary speech
-    (170, 78,  28, 1.9),   # mid: reaches toward the other bubble
-    (300, 120, 60, 1.2),   # far: fills the frame on emphasis
+    (8,   12,   0, 3.4),   # rim: any voice at all
+    (55,  32,   8, 2.6),   # near: ordinary speech
+    (130, 62,  28, 1.9),   # mid: reaches toward the other bubble
+    (230, 95,  60, 1.2),   # far: fills the upper frame on emphasis
 ]
 GLOW_SIZE = 1180                # layers are clipped to the canvas anyway
 
-CAPTION_Y = 640
+CAPTION_Y = 700
 
-LOGO_W = 280
-LOGO_Y = 880
+LOGO_W = 240
+LOGO_Y = 900
 
 
 def run(cmd, **kw):
@@ -540,7 +540,7 @@ def main():
             if segs:
                 caption_list = cap.build_caption_track(
                     segs,
-                    {"coach": (0xC9, 0xA2, 0x27), "trainee": (0x8F, 0xB6, 0xE0)},
+                    {"coach": cap.COACH_INK, "trainee": cap.TRAINEE_INK},
                     tmp, total, args.fps)
 
         logo = logo_path()
