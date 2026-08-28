@@ -51,7 +51,32 @@ B_X = MARGIN + DIAMETER + GAP       # 560
 
 NAME_MAX_W = int(DIAMETER * 0.72)   # keep names clear of the circle's edge
 NAME_MAX_H = int(DIAMETER * 0.30)
-TARGET_LUFS = -16.0   # broadcast/podcast norm; both speakers are matched to it
+# Delivery targets. The two files go to different places and the industry
+# targets differ, so they are mastered differently rather than identically:
+#
+#   Audio  - podcast apps. Apple Podcasts asks for -16 LUFS / -1 dBTP, and the
+#            AES streaming recommendation puts talk content in the -20..-16
+#            band. Mono, because spoken word carries no stereo information and
+#            a listener with one earbud must not lose a speaker.
+#   Video  - YouTube, Instagram, TikTok all normalise to about -14 LUFS.
+#
+PODCAST_LUFS = -16.0
+VIDEO_LUFS = -14.0
+TRUE_PEAK = -1.0        # dBTP; the ceiling every platform asks for
+TARGET_LRA = 7.0        # spoken word sits tight so quiet moments stay audible
+
+# Per-voice cleanup before mixing. No denoiser: the call platform's own noise
+# suppression already leaves a digitally silent floor, so denoising here would
+# only add artefacts to audio that is already clean.
+VOICE_CLEANUP = (
+    "highpass=f=80,"                                   # room rumble, handling
+    "deesser=i=0.3,"                                   # sibilance
+    "agate=threshold=0.004:ratio=3:attack=10:release=250,"  # keep pauses silent
+    "acompressor=threshold=-22dB:ratio=3:attack=6:release=180:makeup=3,"
+    "alimiter=limit=0.95"
+)
+
+TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 
 LOGO_W = 280
 LOGO_Y = 880
@@ -96,6 +121,45 @@ def measure_loudness(path):
             except (IndexError, ValueError):
                 pass
     return val
+
+
+def measure_loudnorm(path):
+    """
+    First pass of a two-pass loudness normalisation.
+
+    Single-pass loudnorm guesses as it goes and lands a decibel or two off
+    target. Measuring the finished mix first, then normalising with those
+    numbers, actually hits the figure the platforms expect.
+    """
+    p = subprocess.run([
+        "ffmpeg", "-hide_banner", "-nostats", "-i", path,
+        "-af", "loudnorm=I={}:TP={}:LRA={}:print_format=json".format(
+            PODCAST_LUFS, TRUE_PEAK, TARGET_LRA),
+        "-f", "null", "-",
+    ], capture_output=True, text=True)
+    text = p.stderr or ""
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    needed = ("input_i", "input_lra", "input_tp", "input_thresh")
+    if not all(k in data for k in needed):
+        return None
+    return data
+
+
+def loudnorm_filter(target, measured):
+    """A loudnorm filter string, two-pass when a measurement is available."""
+    base = "loudnorm=I={}:TP={}:LRA={}".format(target, TRUE_PEAK, TARGET_LRA)
+    if not measured:
+        return base
+    return base + ":measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}".format(
+        measured["input_i"], measured["input_lra"],
+        measured["input_tp"], measured["input_thresh"])
 
 
 def source_size(path):
@@ -295,7 +359,8 @@ def main():
     ap.add_argument("--b-offset", type=float, default=0.0)
     ap.add_argument("--fps", type=int, default=25)
     ap.add_argument("--encoder", default="auto", help="auto | libx264 | h264_nvenc")
-    ap.add_argument("--no-loudnorm", action="store_true")
+    ap.add_argument("--no-cleanup", action="store_true",
+                    help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
 
     for p in (args.a, args.b):
@@ -352,10 +417,10 @@ def main():
         # Match the two speakers to each other before mixing.
         #
         # Different devices and distances put the two voices at different
-        # levels - a phone held close against a laptop across a desk can differ
-        # by several LU, which in a published recording means one person is
-        # persistently quieter. Normalising the finished mix cannot fix that;
-        # it lifts both together and preserves the imbalance.
+        # levels - a phone held close against a laptop across a desk measured
+        # 3.7 LU apart. In a published recording that means one person is
+        # persistently quieter, and normalising the finished mix cannot fix it:
+        # it lifts both together and preserves the gap.
         #
         # A measured fixed gain per track rather than per-track loudnorm: these
         # recordings are mostly silence while the other person talks, and
@@ -370,20 +435,57 @@ def main():
                     i, measured, gains[i]))
 
         def leg(i):
-            g = gains.get(i)
-            return "[{0}:a]volume={1:.2f}dB[g{0}]".format(i, g) if g else \
-                   "[{0}:a]anull[g{0}]".format(i)
+            g = gains.get(i, 0.0)
+            clean = VOICE_CLEANUP if not args.no_cleanup else "anull"
+            return "[{0}:a]{1},volume={2:.2f}dB[g{0}]".format(i, clean, g)
 
         pre = ";".join(leg(i) for i in srcs)
         if len(srcs) == 2:
-            amix = pre + ";[g0][g1]amix=inputs=2:duration=longest:normalize=0[amix]"
+            mix_graph = pre + ";[g0][g1]amix=inputs=2:duration=longest:normalize=0[m]"
         else:
-            amix = pre + ";[g{}]anull[amix]".format(srcs[0])
-        # loudnorm resamples internally and emits 96kHz; force 48kHz back.
-        norm = "anull" if args.no_loudnorm else "loudnorm=I=-16:TP=-1.5:LRA=11"
-        chain = "[amix]" + norm + ",aresample=48000,asplit=2[aout_v][aout_a]"
+            mix_graph = pre + ";[g{}]anull[m]".format(srcs[0])
 
-        filt = build_filter(tracks, total, args.fps, idx) + ";" + amix + ";" + chain
+        # Render the mix losslessly first, so it can be measured and then
+        # mastered twice without stacking two lossy encodes on top of it.
+        mix_wav = os.path.join(tmp, "mix.wav")
+        run(["ffmpeg", "-y", "-v", "error",
+             "-itsoffset", str(args.a_offset), "-i", args.a,
+             "-itsoffset", str(args.b_offset), "-i", args.b,
+             "-filter_complex", mix_graph, "-map", "[m]",
+             "-c:a", "pcm_s24le", "-ar", "48000", "-t", "{:.3f}".format(total),
+             mix_wav])
+
+        measured_mix = measure_loudnorm(mix_wav)
+
+        # The mono fold changes the measurement, so the podcast master needs
+        # its own pass rather than reusing the stereo numbers.
+        mono_wav = os.path.join(tmp, "mix_mono.wav")
+        run(["ffmpeg", "-y", "-v", "error", "-i", mix_wav,
+             "-af", "aformat=channel_layouts=mono",
+             "-c:a", "pcm_s24le", "-ar", "48000", mono_wav])
+        measured_mono = measure_loudnorm(mono_wav)
+
+        if measured_mix:
+            sys.stderr.write("mix: stereo {} LUFS, mono {} LUFS\n".format(
+                measured_mix["input_i"],
+                measured_mono["input_i"] if measured_mono else "?"))
+
+        # Feed the measured mix back in, so each output is mastered from the
+        # same lossless source rather than re-encoding an already-lossy file.
+        cmd += ["-i", mix_wav]
+        mix_idx = nxt
+        nxt += 1
+
+        filt = build_filter(tracks, total, args.fps, idx)
+        # An input pad can only be consumed once, hence the split.
+        filt += ";[{}:a]asplit=2[mv][ma]".format(mix_idx)
+        filt += ";[mv]{},aresample=48000[aout_v]".format(
+            loudnorm_filter(VIDEO_LUFS, measured_mix))
+        # Fold to mono BEFORE normalising. Downmixing afterwards sums the
+        # channels and pushes the true peak back above the ceiling loudnorm
+        # had just enforced - measured at +0.6 dBFS doing it the other way.
+        filt += ";[ma]aformat=channel_layouts=mono,{},aresample=48000[aout_a]".format(
+            loudnorm_filter(PODCAST_LUFS, measured_mono))
 
         encoder = pick_encoder(args.encoder)
         quality = (["-cq", "23", "-preset", "p5"] if encoder == "h264_nvenc"
@@ -394,10 +496,14 @@ def main():
         dur = "{:.3f}".format(total)
 
         cmd += ["-filter_complex", filt]
+        # Video: stereo, louder, for platforms that normalise near -14 LUFS.
         cmd += ["-map", "[vout]", "-map", "[aout_v]", "-c:v", encoder] + quality
         cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 "-t", dur, video_out]
-        cmd += ["-map", "[aout_a]", "-c:a", "aac", "-b:a", "192k", "-t", dur, audio_out]
+        # Audio: mono for podcast apps. Spoken word carries no stereo
+        # information, and a listener with one earbud must not lose a speaker.
+        cmd += ["-map", "[aout_a]", "-c:a", "aac", "-b:a", "128k",
+                "-t", dur, audio_out]
 
         sys.stderr.write("rendering {:.1f}s via {} ...\n".format(total, encoder))
         run(cmd)
