@@ -234,6 +234,16 @@ def create_session(role=ROLE_TRAINEE, display_name=""):
         "exp": expiry,
     }})
 
+    # Ring the coach's phone. Deliberately last and deliberately swallowed: a
+    # missed notification is an annoyance, a failed room is a lost session.
+    if role == ROLE_TRAINEE:
+        try:
+            from push import notify
+            who = (display_name or "").strip()
+            notify("إتقان", "{} ينتظر".format(who) if who else "متدرب ينتظر")
+        except Exception:
+            pass
+
     return {
         "sessionId": room["name"],
         "roomUrl": room["url"],

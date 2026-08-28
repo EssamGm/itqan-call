@@ -154,7 +154,79 @@ $("back-btn").addEventListener("click", () => {
   poll();
 });
 
+/* -------------------------------------------------- push notifications */
+
+/**
+ * Subscribe this device to incoming-call notifications.
+ *
+ * Must run from a tap: browsers refuse a permission prompt that was not asked
+ * for. Kept entirely optional - polling still works without it, so declining
+ * notifications degrades the experience rather than breaking it.
+ */
+function b64ToBytes(base64) {
+  const padded = (base64 + "=".repeat((4 - (base64.length % 4)) % 4))
+    .replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+async function enablePush() {
+  const btn = $("enable-push");
+  const status = $("idle-status");
+  btn.disabled = true;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await (await fetch(`/api/subscribe`)).json();
+    if (!publicKey) throw new Error("لم يتم إعداد التنبيهات على الخادم");
+
+    if ((await Notification.requestPermission()) !== "granted") {
+      throw new Error("لم يُسمح بالتنبيهات");
+    }
+
+    const sub =
+      (await reg.pushManager.getSubscription()) ||
+      (await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToBytes(publicKey),
+      }));
+
+    const res = await fetch(`/api/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: sub.toJSON() }),
+    });
+    if (!res.ok) throw new Error("تعذّر حفظ الاشتراك على الخادم");
+
+    btn.style.display = "none";
+    status.classList.remove("error");
+    status.textContent = "التنبيهات مفعّلة";
+  } catch (err) {
+    status.classList.add("error");
+    status.textContent = err.message || "تعذّر تفعيل التنبيهات";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function initPush() {
+  const btn = $("enable-push");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  btn.addEventListener("click", enablePush);
+
+  // Offer the button unless this device is already subscribed.
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (!existing || Notification.permission !== "granted") {
+      btn.style.display = "inline-block";
+    }
+  } catch (_) {
+    btn.style.display = "inline-block";
+  }
+}
+
 /* ------------------------------------------------------------------ boot */
 
 poll();
 pollHandle = setInterval(poll, POLL_MS);
+initPush();

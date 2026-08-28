@@ -218,3 +218,14 @@ button:not(:disabled):active { opacity: .8; }
   padding: 8px 18px;
   border-radius: 999px;
 }
+
+/* Secondary action: enabling notifications is a one-off, so it should not
+   compete with the answer button. */
+button.ghost {
+  margin-top: 26px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 11px 22px;
+}

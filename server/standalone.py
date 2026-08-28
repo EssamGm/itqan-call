@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_logic import (  # noqa: E402
     SessionError, create_session, find_pending_call, join_existing,
 )
+from push import public_key, save_subscription  # noqa: E402
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
@@ -40,12 +41,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        path = self.path.rstrip("/")
         # The coach app polls this to see whether a trainee is waiting.
-        if self.path.rstrip("/") == "/api/pending":
+        if path == "/api/pending":
             try:
                 return self._json(200, {"pending": find_pending_call()})
             except SessionError as e:
                 return self._json(502, {"error": str(e)})
+        if path == "/api/subscribe":
+            return self._json(200, {"publicKey": public_key()})
         return super().do_GET()
 
     def do_POST(self):
@@ -64,6 +68,9 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/answer":
                 return self._json(200, join_existing(
                     body.get("sessionId"), "coach", body.get("name") or ""))
+            if path == "/api/subscribe":
+                ok = save_subscription(body.get("subscription") or body)
+                return self._json(200 if ok else 503, {"stored": ok})
             return self._json(404, {"error": "not found"})
         except SessionError as e:
             self._json(502, {"error": str(e)})
