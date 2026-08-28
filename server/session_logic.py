@@ -194,7 +194,10 @@ def create_session(role=ROLE_TRAINEE, display_name=""):
         # instead the coach app starts two concurrent recordings, each capturing
         # one participant. That yields the same thing the bubble renderer needs
         # - one file per person - with no bucket to configure.
-        "enable_recording": "cloud",
+        # Must match the type the client passes to startRecording, or Daily
+        # refuses with "startRecording ignored: not enabled". The calls are
+        # voice only, so audio-only it is.
+        "enable_recording": "cloud-audio-only",
         # Voice-only by design: this is a coaching call, and the published
         # video shows named bubbles rather than faces. No camera is ever
         # requested, so nothing has to be trusted to keep it switched off.

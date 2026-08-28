@@ -130,24 +130,45 @@ export class DailyProvider {
     }
     if (people.length < 2) return false;
 
-    let started = 0;
-    for (const p of people) {
-      const role = p.user_id === ROLE_COACH ? ROLE_COACH : ROLE_TRAINEE;
-      try {
-        await this.call.startRecording({
-          type: "cloud-audio-only",
-          instanceId: INSTANCE_IDS[role],
-          layout: {
-            preset: "audio-only",
-            participants: { audio: [p.session_id] },
-          },
-        });
-        started += 1;
-      } catch (_) {
-        /* try the other participant regardless */
+    // startRecording resolves even when Daily refuses the request - the
+    // refusal arrives as a recording-error event. Trusting the promise made
+    // the app report success while nothing was being recorded, so wait for
+    // Daily to actually confirm each one.
+    const confirmed = new Set();
+    const failures = [];
+    const onStarted = (e) => e && e.instanceId && confirmed.add(e.instanceId);
+    const onError = (e) => failures.push((e && e.errorMsg) || "recording error");
+    this.call.on("recording-started", onStarted);
+    this.call.on("recording-error", onError);
+
+    try {
+      for (const p of people) {
+        const role = p.user_id === ROLE_COACH ? ROLE_COACH : ROLE_TRAINEE;
+        try {
+          await this.call.startRecording({
+            type: "cloud-audio-only",
+            instanceId: INSTANCE_IDS[role],
+            layout: {
+              preset: "audio-only",
+              participants: { audio: [p.session_id] },
+            },
+          });
+        } catch (_) {
+          /* try the other participant regardless */
+        }
       }
+
+      const until = Date.now() + 12000;
+      while (Date.now() < until && confirmed.size < 2 && !failures.length) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    } finally {
+      this.call.off("recording-started", onStarted);
+      this.call.off("recording-error", onError);
     }
-    return started === 2;
+
+    if (failures.length) this.lastRecordingError = failures[0];
+    return confirmed.size === 2;
   }
 
   async leave() {

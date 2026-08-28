@@ -98,7 +98,9 @@ $("answer-btn").addEventListener("click", async () => {
         startTimer();
         // Raw per-person recording cannot be auto-started by the token, so
         // start it here. Silent on success; loud only if it fails.
-        if (!(await provider.startRecording())) warnNotRecording();
+        if (!(await provider.startRecording())) {
+          warnNotRecording(provider.lastRecordingError);
+        }
       },
       onPeerLeft: () => endCall(),
       onError: () => endCall(),
@@ -113,13 +115,17 @@ $("answer-btn").addEventListener("click", async () => {
 });
 
 /** Only ever shown on the coach's screen, and only when recording failed. */
-function warnNotRecording() {
+function warnNotRecording(detail) {
   const stage = document.querySelector("#screen-call .voice-stage");
   if (!stage || stage.querySelector(".rec-warning")) return;
   const el = document.createElement("div");
   el.className = "rec-warning";
   el.textContent = "لا يتم التسجيل";
+  // Keep the reason on the element: a screenshot then carries the diagnosis,
+  // which is how the last silent failure went unnoticed for a whole call.
+  if (detail) el.title = String(detail);
   stage.appendChild(el);
+  console.warn("recording did not start:", detail || "(no detail)");
 }
 
 /* --------------------------------------------------------------- controls */
