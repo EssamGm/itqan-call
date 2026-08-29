@@ -45,6 +45,13 @@ Real examples from real calls, with what was actually said:
 | ويدفعون أموال ومدلوية | ويدفعون أموال وما أدري إيش |
 | دصر | بس صح |
 | وما بالله ايش | وما أدري إيش |
+| ده حين | الحين |
+| فنظيم | فتنظيم |
+| اتوي | اسوي |
+| دروسها بجعفر | دروس ابو جعفر |
+| تجلت كل الافكار حالتي | سجلت كل الافكار حقتي |
+| تكالين | اتكاليين |
+| يمدينا | يمديني |
 
 The pattern is worth understanding rather than memorising: the model
 substitutes a common word for an uncommon one that sounds similar. When a line
@@ -60,6 +67,14 @@ Saudi dialect is not broken Modern Standard Arabic. Leave it alone:
 - **بس** — "but/just", correct
 - Code-switching mid-sentence into English is normal in these calls and should
   be preserved exactly as spoken
+
+**The trainee is often not Saudi.** عصام is, so his side reads as Najdi; a
+trainee may not, and their dialect is not an error to be normalised toward his.
+One call had **شو** rather than وش, **إشي** for "something", and ما‑...‑ش
+negation (**ما حطيتش**) — all Levantine, all correct, and all things that look
+wrong if you are reading the transcript expecting Saudi. Two people speaking
+different dialects to each other is what the recording actually contains, and
+flattening one of them into the other misrepresents the call.
 
 Rewriting dialect into formal Arabic makes the captions read as a translation
 of the conversation rather than a record of it, and loses the voice that makes

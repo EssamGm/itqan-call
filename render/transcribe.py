@@ -45,7 +45,12 @@ MAX_CAPTION_WORDS = 9
 # Version tag for the cache. Bumping it invalidates transcripts made by an
 # older version of this file, so a timing change actually takes effect instead
 # of being served stale from disk.
-CACHE_VERSION = 4
+#
+# Bumping this discards hand corrections along with the machine output, since
+# both live in the same file. `transcript_tool.py reapply` exists to carry them
+# across: it matches on text rather than line number, so corrections survive a
+# re-transcription that adds or drops lines.
+CACHE_VERSION = 5
 
 _MODEL = None
 
@@ -101,8 +106,15 @@ def _is_filler(text):
     distinct = set(tokens)
     if len(tokens) >= 3 and len(distinct) <= 2:
         return True
-    # A single grunt on its own carries nothing either.
-    FILLER = {"ايه", "اه", "آه", "نعم", "طيب", "اها", "أها", "mm", "mhm", "uh", "um"}
+    # A single grunt on its own carries nothing either. "ايوه" and its spellings
+    # belong here for the same reason "نعم" does - on a real call the trainee
+    # produced four consecutive captions reading only "ايو" while the coach
+    # explained, which looks like the transcriber broke rather than like
+    # someone listening.
+    FILLER = {"ايه", "اه", "آه", "نعم", "طيب", "اها", "أها",
+              "ايو", "ايوه", "أيوه", "ايوا", "أيوا", "هم", "همم",
+              "mm", "mhm", "uh", "um", "hmm", "huh", "ah", "oh",
+              "yeah", "yep", "ok", "okay", "right"}
     return len(tokens) <= 2 and distinct <= FILLER
 
 

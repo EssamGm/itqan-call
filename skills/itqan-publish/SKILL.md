@@ -72,6 +72,17 @@ timings belong to the original lines and silently shifting them produces
 captions that drift out of sync — a failure that looks fine until someone
 watches the video.
 
+If a call has to be re-transcribed after it was corrected — a settings change,
+a better model — the corrections are recoverable rather than lost:
+
+```bash
+python skills/itqan-publish/scripts/transcript_tool.py reapply <new.json> <old.json>
+```
+
+It diffs the old transcript against its own backup to work out what was
+changed, then matches those onto the new one by text rather than line number,
+and tells you which ones no longer have anywhere to go.
+
 **What to fix.** Lines that read as nonsense are almost always a near-homophone:
 the model substituted a common word for an uncommon one. "فيه معادل" for "فيه
 معاهد". Read for meaning, and when a line does not mean anything, find the
@@ -150,7 +161,10 @@ transcript as a fault.
 
 **Backchannel is filtered.** Long runs of "ايه, ايه, ايه" are real speech,
 correctly transcribed, and worth nothing on screen; the transcriber drops them
-already. If they appear in captions, something regressed.
+already. If a caption is nothing but a listening noise, the filter has a gap —
+check `_is_filler` in `render/transcribe.py`. It matches an explicit list, so
+each new spelling has to be added; "ايو" got through that way and put four
+identical captions on screen.
 
 **A voice sounds muffled.** Usually a weak connection, which narrows the codec's
 band so the top octave was never transmitted. It cannot be restored — excitation
@@ -161,4 +175,5 @@ WiFi; that helps more than anything downstream.
 
 **Transcription is cached by version.** Changing settings in `transcribe.py`
 means bumping `CACHE_VERSION`, or old transcripts are served from disk and the
-change appears to do nothing.
+change appears to do nothing. Bumping it also discards any hand corrections on
+already-processed calls, so run `reapply` afterwards to carry them across.
