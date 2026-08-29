@@ -154,6 +154,9 @@ MATCH_BANDS = [
 # was never transmitted; lifting it far only amplifies noise and artefacts.
 MAX_MATCH_BOOST_DB = 7.0
 MAX_MATCH_CUT_DB = 4.0
+# Deliberate favour toward the guest, so their voice never sits
+# under the coach's and force a listener to reach for the volume.
+TRAINEE_LIFT_DB = 1.5
 
 
 def speech_only(path, tmp_dir, tag):
@@ -183,22 +186,43 @@ def measure_bands(path):
     return levels
 
 
-def matching_eq(reference, other):
-    """
-    Corrective EQ bringing one voice's tone toward the other's.
+# Where the two voices meet. 1.0 would drag the coach all the way to the
+# trainee's tone, 0.0 would leave the coach untouched and demand the trainee
+# make up the whole difference alone. Weighted toward the coach because he is
+# usually the better capture and carries most of the talking.
+MEET_TOWARD_TRAINEE = 0.3
 
-    Two people on two devices in two rooms do not sound alike, and a listener
-    should not have to reach for the volume when the speaker changes. Matching
-    on loudness alone does not fix it: on this project's own recording both
-    voices measured within 0.3 LUFS while one was 11 dB down above 6 kHz, which
-    is heard as "muffled", not as "quiet".
+
+def matching_targets(coach, trainee):
     """
-    if not reference or not other:
+    A shared tone both voices are moved toward.
+
+    Matching the quieter voice up to the brighter one cannot work when the
+    difference is missing signal rather than low level: a weak connection
+    narrows the codec's band, and the octave that was never transmitted cannot
+    be synthesised back - harmonic excitation on this project's own recording
+    recovered 2 dB of a 12 dB deficit, because there was too little left to
+    generate harmonics from.
+
+    What a listener actually notices is the *step* between speakers, not the
+    absolute brightness of either. So both are moved toward a common target:
+    the trainee comes up as far as is honest, and the coach comes down slightly
+    to meet him. Neither is damaged, and the change between them stops being
+    something you reach for the volume over.
+    """
+    if not coach or not trainee:
+        return None
+    return [c + (t - c) * MEET_TOWARD_TRAINEE for c, t in zip(coach, trainee)]
+
+
+def matching_eq(target, current, extra_gain_db=0.0):
+    """Corrective EQ moving one voice toward the shared target."""
+    if not target or not current:
         return ""
     parts = []
-    for (lo, hi, freq), ref, cur in zip(MATCH_BANDS, reference, other):
-        delta = ref - cur
-        if abs(delta) < 1.0:
+    for (lo, hi, freq), want, have in zip(MATCH_BANDS, target, current):
+        delta = want - have + extra_gain_db
+        if abs(delta) < 0.8:
             continue
         gain = max(-MAX_MATCH_CUT_DB, min(MAX_MATCH_BOOST_DB, delta))
         parts.append("equalizer=f={}:width_type=h:w={}:g={:.2f}".format(
@@ -668,9 +692,16 @@ def main():
         # whoever happened to have the better microphone that day.
         eq = {i: "" for i in srcs}
         if not args.no_match and len(srcs) == 2 and bands.get(0) and bands.get(1):
-            eq[1] = matching_eq(bands[0], bands[1])
-            if eq[1]:
-                print("matching trainee tone to coach: " + eq[1], file=sys.stderr)
+            target = matching_targets(bands[0], bands[1])
+            if target:
+                eq[0] = matching_eq(target, bands[0])
+                # A little extra on the trainee: the coach is usually closer to
+                # a good microphone and does most of the talking, so meeting in
+                # the middle still leaves the guest sounding like the guest.
+                eq[1] = matching_eq(target, bands[1], extra_gain_db=TRAINEE_LIFT_DB)
+                for who, e in (("coach", eq[0]), ("trainee", eq[1])):
+                    if e:
+                        print("tone match {}: {}".format(who, e), file=sys.stderr)
 
         def leg(i):
             g = gains.get(i, 0.0)

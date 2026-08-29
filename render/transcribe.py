@@ -18,7 +18,12 @@ import json
 import os
 import sys
 
-MODEL_SIZE = os.environ.get("ITQAN_WHISPER_MODEL", "small")
+# large-v3, not small. On this project's own Saudi-dialect recording, small
+# returned "فيه معادل فيه دورات" and "دصر" where large-v3 returned "في معاهد في
+# دورات" and "بس صح" - the difference between nonsense and usable text. It runs
+# at about 0.6x real time on this CPU instead of 3x, which costs an hour on a
+# long call and is worth it when the render happens overnight anyway.
+MODEL_SIZE = os.environ.get("ITQAN_WHISPER_MODEL", "large-v3")
 
 # How far ahead of the voice a caption appears.
 #
@@ -40,7 +45,7 @@ MAX_CAPTION_WORDS = 9
 # Version tag for the cache. Bumping it invalidates transcripts made by an
 # older version of this file, so a timing change actually takes effect instead
 # of being served stale from disk.
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 _MODEL = None
 
