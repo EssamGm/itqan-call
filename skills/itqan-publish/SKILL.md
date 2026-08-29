@@ -129,11 +129,18 @@ ffmpeg -y -v error -ss 120 -i <out>.mp4 -frames:v 1 /tmp/frame.png
 
 Read that frame. Confirm the caption is inside its panel, the names are right,
 and the logo is clear. Then check the audio landed on target — video near
-−14 LUFS, audio near −16, peak at or under −1 dBTP:
+−14 LUFS, audio near −16, true peak around −1 dBTP:
 
 ```bash
-ffmpeg -hide_banner -nostats -i <out>.mp4 -af ebur128=peak=true -f null - 2>&1 | tail -12
+ffmpeg -hide_banner -nostats -i <out>.mp4 -af ebur128=peak=true -f null - 2>&1 | tail -18
 ```
+
+`loudnorm` lands close to a target rather than exactly on it, so expect around
+half a LU either side — a real call came out at −14.6 and −16.7 against −14 and
+−16. The true-peak ceiling is usually what holds integrated loudness a little
+low, which is the right way round: better slightly quiet than clipped. Worry
+when a figure is a couple of LU out, not a fraction, and worry about true peak
+only if it climbs toward 0.
 
 A 5-minute call renders to about 30 MB. Anything over 30 MB will not send to a
 phone, so make a lighter copy alongside the original:
