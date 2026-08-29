@@ -20,6 +20,28 @@ import sys
 
 MODEL_SIZE = os.environ.get("ITQAN_WHISPER_MODEL", "small")
 
+# How far ahead of the voice a caption appears.
+#
+# Whisper's alignment sits a little behind the sound, and reading along with a
+# voice makes that obvious: a late caption reads as a fault, a slightly early
+# one does not register at all. Measured against this project's own recordings,
+# word-level starts turned out identical to segment starts to the millisecond -
+# so the lag is in the model's alignment, not in which field is read, and a
+# lead offset is the only thing that actually addresses it.
+LEAD_SECONDS = 0.32
+
+# A caption has to be readable at a glance, which bounds how much can sit on
+# screen at once and for how long. Whisper will happily return a single segment
+# spanning three minutes - on this project's own recordings it returned one of
+# 173 seconds - and that is a wall of text, not a caption.
+MAX_CAPTION_SECONDS = 4.5
+MAX_CAPTION_WORDS = 9
+
+# Version tag for the cache. Bumping it invalidates transcripts made by an
+# older version of this file, so a timing change actually takes effect instead
+# of being served stale from disk.
+CACHE_VERSION = 3
+
 _MODEL = None
 
 
@@ -59,6 +81,63 @@ def _is_hallucination(seg, text):
     return False
 
 
+def _is_filler(text):
+    """
+    Reject a caption that is nothing but backchannel.
+
+    One person listening while the other explains produces long runs of "ايه,
+    ايه, ايه" - real speech, correctly transcribed, and worth nothing on
+    screen. Putting it up as a caption reads as a transcription failure.
+    """
+    tokens = [t.strip(".,!?،؟").lower() for t in text.split()]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return True
+    distinct = set(tokens)
+    if len(tokens) >= 3 and len(distinct) <= 2:
+        return True
+    # A single grunt on its own carries nothing either.
+    FILLER = {"ايه", "اه", "آه", "نعم", "طيب", "اها", "أها", "mm", "mhm", "uh", "um"}
+    return len(tokens) <= 2 and distinct <= FILLER
+
+
+def _split_into_captions(words):
+    """
+    Break one segment into caption-sized pieces on word boundaries.
+
+    Timing comes from the words themselves, so each piece appears with the
+    words it contains rather than inheriting the whole segment's start.
+    """
+    out = []
+    chunk = []
+
+    def flush():
+        if not chunk:
+            return
+        text = "".join(w.word for w in chunk).strip()
+        if not text:
+            chunk.clear()
+            return
+        start = max(0.0, float(chunk[0].start) - LEAD_SECONDS)
+        end = float(chunk[-1].end)
+        out.append({"start": start, "end": max(end, start + 0.5), "text": text})
+        chunk.clear()
+
+    for w in words:
+        if chunk:
+            spanned = float(w.end) - float(chunk[0].start)
+            # Break on length, or on a real pause, which is usually a clause
+            # boundary and so the most natural place to cut.
+            gap = float(w.start) - float(chunk[-1].end)
+            if (spanned > MAX_CAPTION_SECONDS
+                    or len(chunk) >= MAX_CAPTION_WORDS
+                    or gap > 0.7):
+                flush()
+        chunk.append(w)
+    flush()
+    return out
+
+
 def transcribe(path, language=None, cache=True):
     """
     Return [{start, end, text}] for one audio file.
@@ -66,7 +145,8 @@ def transcribe(path, language=None, cache=True):
     Timings are relative to the start of that file, so any join offset must be
     added by the caller.
     """
-    cache_path = os.path.splitext(path)[0] + ".transcript.json"
+    cache_path = "{}.v{}.transcript.json".format(
+        os.path.splitext(path)[0], CACHE_VERSION)
     if cache and os.path.isfile(cache_path):
         try:
             with open(cache_path, "r", encoding="utf-8") as fh:
@@ -82,7 +162,11 @@ def transcribe(path, language=None, cache=True):
         # are silent for however long the other person is talking, and that is
         # exactly where a transcriber invents text.
         vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 700},
+        vad_parameters={"min_silence_duration_ms": 700, "speech_pad_ms": 120},
+        # Needed for honest timing: a segment's own start marks where the model
+        # became confident, not where the sound began, and it runs late enough
+        # to be visible when you are reading along with the voice.
+        word_timestamps=True,
     )
 
     out = []
@@ -90,7 +174,22 @@ def transcribe(path, language=None, cache=True):
         text = (s.text or "").strip()
         if not text or _is_hallucination(s, text):
             continue
-        out.append({"start": float(s.start), "end": float(s.end), "text": text})
+
+        # Prefer the first word's onset over the segment's own start.
+        words = list(getattr(s, "words", None) or [])
+        start = float(words[0].start) if words else float(s.start)
+        end = float(words[-1].end) if words else float(s.end)
+
+        if words:
+            out.extend(c for c in _split_into_captions(words)
+                       if not _is_filler(c["text"]))
+        else:
+            # Cue a little early: a caption that lands late reads as a mistake,
+            # while one a fraction early reads as natural, which is why
+            # broadcast subtitling leads the audio rather than chasing it.
+            start = max(0.0, start - LEAD_SECONDS)
+            out.append({"start": start, "end": max(end, start + 0.4),
+                        "text": text})
 
     if cache:
         try:

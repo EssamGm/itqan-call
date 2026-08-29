@@ -18,9 +18,17 @@ from PIL import Image, ImageDraw
 
 from arabic_text import render_text_png
 
-PANEL_W = 820
-PANEL_H = 132
-RADIUS = 16
+# Captions are body text, and the brand's reading face is IBM Plex Sans Arabic.
+# Cairo is a display face - it belongs on the logo and headings, and at caption
+# size its heavy strokes close up the counters and make a wall of text.
+FONT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "assets", "fonts", "IBMPlexSansArabic-SemiBold.ttf")
+if not os.path.isfile(FONT):
+    FONT = None   # fall back to the default rather than failing the render
+
+PANEL_W = 880
+PANEL_H = 156
+RADIUS = 18
 
 # White panel. Being opaque is the point as much as the colour: it blocks the
 # speaking bloom, so the words stay readable however loud the moment gets.
@@ -33,15 +41,20 @@ PANEL_EDGE = (226, 230, 236, 255)
 COACH_INK = (0x8F, 0x6A, 0x08)      # 5.0:1
 TRAINEE_INK = (0x1F, 0x4E, 0x79)    # 8.7:1
 
-FONT_SIZE = 34
-LINE_GAP = 8
+# Sized for reading at arm's length on a phone, with room for two lines and
+# real space between them. Text crammed edge to edge is what made the earlier
+# panel unpleasant, not the size of the letters.
+FONT_SIZE = 40
+LINE_GAP = 14
+SIDE_PADDING = 70
 MAX_LINES = 2
 
 
 def _text_image(text, size, colour, tmp_dir, tag):
     """Shaped text as an RGBA image, painted in `colour` through its own alpha."""
     png = os.path.join(tmp_dir, "cap_text_{}.png".format(tag))
-    render_text_png(text, png, size=size, color="#FFFFFF", bg=0x000000)
+    render_text_png(text, png, size=size, color="#FFFFFF", bg=0x000000,
+                    **({"font_path": FONT} if FONT else {}))
     with Image.open(png) as raw:
         alpha = raw.convert("L")
     ink = Image.new("RGBA", alpha.size, colour + (255,))
@@ -78,7 +91,7 @@ def render_caption(text, colour, out_path, tmp_dir, tag):
     d.rounded_rectangle([0, 0, PANEL_W - 1, PANEL_H - 1], radius=RADIUS,
                         fill=PANEL_FILL, outline=PANEL_EDGE, width=2)
 
-    lines = _wrap(text, 52)
+    lines = _wrap(text, 46)
     if not lines:
         return False
 
@@ -86,8 +99,8 @@ def render_caption(text, colour, out_path, tmp_dir, tag):
     for i, line in enumerate(lines):
         img = _text_image(line, FONT_SIZE, colour, tmp_dir, "{}_{}".format(tag, i))
         # Shrink a line that still overruns rather than letting it clip.
-        if img.width > PANEL_W - 48:
-            scale = (PANEL_W - 48) / img.width
+        if img.width > PANEL_W - SIDE_PADDING:
+            scale = (PANEL_W - SIDE_PADDING) / img.width
             img = img.resize((int(img.width * scale), max(1, int(img.height * scale))),
                              Image.LANCZOS)
         imgs.append(img)

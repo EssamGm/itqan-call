@@ -24,6 +24,17 @@ const INSTANCE_IDS = {
   [ROLE_TRAINEE]: "5c0ac400-0000-4000-8000-000000000002",
 };
 
+// A call must not be able to outlive the conversation.
+//
+// When one side's connection dropped, the other sat in an empty room with the
+// timer still running, unaware, until they hung up by hand - and Daily bills
+// for every minute of it. Nothing on the server can see that: the room is
+// still occupied, so it looks like a call in progress.
+const ALONE_AFTER_ANSWER_MS = 45000;   // peer vanished mid-call
+const ALONE_WAITING_MS = 150000;       // nobody ever answered
+const CONNECTION_LOST_MS = 25000;      // our own connection never came back
+const WATCHDOG_TICK_MS = 2000;
+
 // Audio is the entire product here, so these matter more than usual.
 const AUDIO_CONSTRAINTS = {
   echoCancellation: true,
@@ -69,7 +80,7 @@ export class DailyProvider {
 
   async join(handlers = {}) {
     if (!this.session) throw new Error("createSession must run before join");
-    const { onRemoteAudio, onJoined, onPeerLeft, onError } = handlers;
+    const { onRemoteAudio, onJoined, onPeerLeft, onError, onAutoEnd } = handlers;
 
     this.call = window.DailyIframe.createCallObject({
       subscribeToTracksAutomatically: true,
@@ -102,7 +113,71 @@ export class DailyProvider {
       userMediaAudioConstraints: AUDIO_CONSTRAINTS,
     });
 
+    // Only after a successful join: a call that has begun is a call that can
+    // be left running by accident.
+    this._startWatchdog({ onEnded: (reason) => onAutoEnd && onAutoEnd(reason) });
+
     return this.session;
+  }
+
+  /**
+   * Watch for a call that has stopped being a call.
+   *
+   * Three ways that happens: the other side disappears mid-conversation, they
+   * never answer at all, or our own connection drops and does not return. All
+   * three end the call rather than leaving it running.
+   *
+   * The mid-call timer only starts once both people have actually been present,
+   * so a trainee waiting to be answered is never cut off by it.
+   */
+  _startWatchdog({ onEnded } = {}) {
+    let everBothPresent = false;
+    let aloneSince = null;
+    let interruptedSince = null;
+
+    const onNetwork = (ev) => {
+      const state = ev && (ev.event || ev.type);
+      if (state === "interrupted") {
+        if (!interruptedSince) interruptedSince = Date.now();
+      } else if (state === "connected") {
+        interruptedSince = null;
+      }
+    };
+    this.call.on("network-connection", onNetwork);
+
+    const finish = (reason) => {
+      this._stopWatchdog();
+      onEnded && onEnded(reason);
+    };
+
+    this._watchdogOff = () => this.call && this.call.off("network-connection", onNetwork);
+    this._watchdog = setInterval(() => {
+      if (!this.call) return this._stopWatchdog();
+
+      const people = Object.values(this.call.participants() || {})
+        .filter((p) => p && p.session_id);
+      if (people.length >= 2) {
+        everBothPresent = true;
+        aloneSince = null;
+      } else if (!aloneSince) {
+        aloneSince = Date.now();
+      }
+
+      const limit = everBothPresent ? ALONE_AFTER_ANSWER_MS : ALONE_WAITING_MS;
+      if (aloneSince && Date.now() - aloneSince > limit) {
+        return finish(everBothPresent ? "peer-gone" : "no-answer");
+      }
+      if (interruptedSince && Date.now() - interruptedSince > CONNECTION_LOST_MS) {
+        return finish("connection-lost");
+      }
+    }, WATCHDOG_TICK_MS);
+  }
+
+  _stopWatchdog() {
+    if (this._watchdog) clearInterval(this._watchdog);
+    this._watchdog = null;
+    if (this._watchdogOff) this._watchdogOff();
+    this._watchdogOff = null;
   }
 
   /** Wait until both people are in the room. Returns the participant list. */
@@ -189,6 +264,7 @@ export class DailyProvider {
    * hanging up should not be able to end the coach's session.
    */
   async leave({ endForEveryone = false } = {}) {
+    this._stopWatchdog();
     const sessionId = this.session && this.session.sessionId;
     try {
       if (this.call) await this.call.leave();
@@ -221,4 +297,20 @@ export class DailyProvider {
   setMic(on) {
     if (this.call) this.call.setLocalAudio(!!on);
   }
+
+  /*
+   * On earpiece versus speakerphone, which a real phone call offers:
+   *
+   * A web page cannot do it on Android. Choosing an audio output means
+   * setSinkId(), which Chrome on Android does not implement - it is desktop
+   * only, Firefox has it behind a flag, and Safari leaves the choice to the
+   * OS entirely. Routing to the earpiece is a privilege the browser keeps for
+   * itself, so there is nothing to call.
+   *
+   * Wired and Bluetooth headsets route normally, because the OS handles that
+   * below the browser. Anything more would need a native app, which this
+   * project deliberately is not.
+   *
+   * Left here so it is not attempted again.
+   */
 }

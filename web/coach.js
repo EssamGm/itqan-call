@@ -113,6 +113,7 @@ $("answer-btn").addEventListener("click", async () => {
         warnNotRecording(provider.lastRecordingError);
       },
       onPeerLeft: () => endCall(),
+      onAutoEnd: (reason) => endCall(AUTO_END_TEXT[reason]),
       onError: () => endCall(),
     });
   } catch (err) {
@@ -167,7 +168,9 @@ $("btn-speaker").addEventListener("click", () => {
 
 $("btn-hangup").addEventListener("click", () => endCall());
 
-async function endCall() {
+const AUTO_END_TEXT = {"peer-gone": "انقطع الاتصال بالطرف الآخر", "no-answer": "لم يتم الرد", "connection-lost": "انقطع الاتصال بالإنترنت"};
+
+async function endCall(note) {
   if (!inCall) return;
   const seconds = stopTimer();
   // The coach hanging up ends the call for both sides.
@@ -183,7 +186,8 @@ async function endCall() {
   if (warn) warn.remove();
   inCall = false;
   setPending(null);
-  $("ended-duration").textContent = seconds > 0 ? `المدة ${fmt(seconds)}` : "";
+  $("ended-duration").textContent =
+    note || (seconds > 0 ? `المدة ${fmt(seconds)}` : "");
   show("screen-ended");
 }
 

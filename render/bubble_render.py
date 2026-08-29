@@ -140,6 +140,72 @@ def probe(path):
     return {"duration": dur, "has_video": "video" in kinds, "has_audio": "audio" in kinds}
 
 
+# Bands used to compare one voice against the other, and the filter frequency
+# used to correct each. Chosen around speech: body, vowels, presence, clarity.
+MATCH_BANDS = [
+    (100, 400, 220),
+    (400, 1200, 700),
+    (1200, 3000, 1900),
+    (3000, 6000, 4200),
+    (6000, 12000, 8000),
+]
+# A cap, because this corrects a difference in capture, not a missing signal.
+# When a weak connection pushes the codec into a narrower band, the top octave
+# was never transmitted; lifting it far only amplifies noise and artefacts.
+MAX_MATCH_BOOST_DB = 7.0
+MAX_MATCH_CUT_DB = 4.0
+
+
+def speech_only(path, tmp_dir, tag):
+    """Strip the silence, so a voice is measured on the parts where it speaks."""
+    out = os.path.join(tmp_dir, "speech_{}.wav".format(tag))
+    run(["ffmpeg", "-y", "-v", "error", "-i", path,
+         "-af", "silenceremove=stop_periods=-1:stop_duration=0.25:stop_threshold=-45dB",
+         "-c:a", "pcm_s16le", out])
+    return out
+
+
+def measure_bands(path):
+    """RMS per speech band, in dB. Returns None if it cannot be measured."""
+    levels = []
+    for lo, hi, _f in MATCH_BANDS:
+        try:
+            p = subprocess.run([
+                "ffmpeg", "-hide_banner", "-nostats", "-i", path,
+                "-af", "bandpass=f={}:width_type=h:w={},astats=metadata=1:reset=0".format(
+                    (lo + hi) // 2, (hi - lo) // 2),
+                "-f", "null", "-",
+            ], capture_output=True, text=True)
+            line = [l for l in (p.stderr or "").splitlines() if "RMS level dB" in l]
+            levels.append(float(line[0].split()[-1]))
+        except (IndexError, ValueError):
+            return None
+    return levels
+
+
+def matching_eq(reference, other):
+    """
+    Corrective EQ bringing one voice's tone toward the other's.
+
+    Two people on two devices in two rooms do not sound alike, and a listener
+    should not have to reach for the volume when the speaker changes. Matching
+    on loudness alone does not fix it: on this project's own recording both
+    voices measured within 0.3 LUFS while one was 11 dB down above 6 kHz, which
+    is heard as "muffled", not as "quiet".
+    """
+    if not reference or not other:
+        return ""
+    parts = []
+    for (lo, hi, freq), ref, cur in zip(MATCH_BANDS, reference, other):
+        delta = ref - cur
+        if abs(delta) < 1.0:
+            continue
+        gain = max(-MAX_MATCH_CUT_DB, min(MAX_MATCH_BOOST_DB, delta))
+        parts.append("equalizer=f={}:width_type=h:w={}:g={:.2f}".format(
+            freq, (hi - lo) // 2, gain))
+    return ",".join(parts)
+
+
 def measure_loudness(path):
     """Integrated loudness in LUFS, or None if it cannot be measured."""
     p = subprocess.run(
@@ -480,6 +546,8 @@ def main():
                     help="transcribe both speakers and burn in coloured captions")
     ap.add_argument("--no-pulse", action="store_true",
                     help="static bubbles; no speaking halo")
+    ap.add_argument("--no-match", action="store_true",
+                    help="skip matching the trainee tone to the coach")
     ap.add_argument("--no-cleanup", action="store_true",
                     help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
@@ -580,18 +648,37 @@ def main():
         # recordings are mostly silence while the other person talks, and
         # dynamic normalisation would pump that silence up between phrases.
         srcs = [i for i, t in enumerate(tracks) if t["has_audio"]]
-        gains = {}
+        paths = (args.a, args.b)
+
+        # Measure each voice on the parts where it actually speaks. Measuring
+        # the whole file is meaningless when one person is silent for most of
+        # it - on this call the trainee spoke 59 seconds out of 328.
+        speech = {i: speech_only(paths[i], tmp, str(i)) for i in srcs}
+        gains, bands = {}, {}
         for i in srcs:
-            measured = measure_loudness((args.a, args.b)[i])
+            measured = measure_loudness(speech[i])
             if measured is not None and measured > -70:
                 gains[i] = max(-12.0, min(12.0, TARGET_LUFS - measured))
-                sys.stderr.write("track {}: {:.1f} LUFS -> {:+.1f} dB\n".format(
-                    i, measured, gains[i]))
+                print("track {}: {:.1f} LUFS -> {:+.1f} dB".format(
+                    i, measured, gains[i]), file=sys.stderr)
+            bands[i] = measure_bands(speech[i])
+
+        # The coach is on every call, so making them the tonal reference keeps
+        # the whole series consistent rather than each episode drifting toward
+        # whoever happened to have the better microphone that day.
+        eq = {i: "" for i in srcs}
+        if not args.no_match and len(srcs) == 2 and bands.get(0) and bands.get(1):
+            eq[1] = matching_eq(bands[0], bands[1])
+            if eq[1]:
+                print("matching trainee tone to coach: " + eq[1], file=sys.stderr)
 
         def leg(i):
             g = gains.get(i, 0.0)
             clean = VOICE_CLEANUP if not args.no_cleanup else "anull"
-            return "[{0}:a]{1},volume={2:.2f}dB[g{0}]".format(i, clean, g)
+            chain = clean
+            if eq.get(i):
+                chain += "," + eq[i]
+            return "[{0}:a]{1},volume={2:.2f}dB[g{0}]".format(i, chain, g)
 
         pre = ";".join(leg(i) for i in srcs)
         if len(srcs) == 2:

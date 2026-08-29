@@ -101,6 +101,9 @@ $("consent-ok").addEventListener("click", async () => {
         startTimer();
       },
       onPeerLeft: () => endCall(),
+      // The call ended itself: peer gone, never answered, or our own
+      // connection did not come back.
+      onAutoEnd: (reason) => endCall(AUTO_END_TEXT[reason]),
       onError: (msg) => fail(msg),
     });
   } catch (err) {
@@ -144,7 +147,9 @@ $("btn-speaker").addEventListener("click", () => {
 
 $("btn-hangup").addEventListener("click", () => endCall());
 
-async function endCall() {
+const AUTO_END_TEXT = {"peer-gone": "انقطع الاتصال بالطرف الآخر", "no-answer": "لم يتم الرد", "connection-lost": "انقطع الاتصال بالإنترنت"};
+
+async function endCall(note) {
   const seconds = stopTimer();
   await provider.leave().catch(() => {});
   const audio = $("remote-audio");
@@ -154,7 +159,8 @@ async function endCall() {
   speakerOn = true;
   $("btn-mic").classList.remove("off");
   $("btn-speaker").classList.remove("off");
-  $("ended-duration").textContent = seconds > 0 ? `المدة ${fmt(seconds)}` : "";
+  $("ended-duration").textContent =
+    note || (seconds > 0 ? `المدة ${fmt(seconds)}` : "");
   show("screen-ended");
 }
 
