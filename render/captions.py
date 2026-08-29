@@ -51,12 +51,23 @@ MAX_LINES = 2
 
 
 def _text_image(text, size, colour, tmp_dir, tag):
-    """Shaped text as an RGBA image, painted in `colour` through its own alpha."""
+    """
+    Shaped text as an RGBA image, cropped to the ink and painted in `colour`.
+
+    The cropping matters: the renderer leaves generous room above and below for
+    ascenders and the hamza descender, so an uncropped line is far taller than
+    the letters. Stacking two of those overflowed the panel top and bottom.
+    """
     png = os.path.join(tmp_dir, "cap_text_{}.png".format(tag))
     render_text_png(text, png, size=size, color="#FFFFFF", bg=0x000000,
                     **({"font_path": FONT} if FONT else {}))
     with Image.open(png) as raw:
         alpha = raw.convert("L")
+
+    box = alpha.getbbox()          # None when the line rendered as nothing
+    if box:
+        alpha = alpha.crop(box)
+
     ink = Image.new("RGBA", alpha.size, colour + (255,))
     ink.putalpha(alpha)
     return ink
@@ -95,17 +106,22 @@ def render_caption(text, colour, out_path, tmp_dir, tag):
     if not lines:
         return False
 
-    imgs = []
-    for i, line in enumerate(lines):
-        img = _text_image(line, FONT_SIZE, colour, tmp_dir, "{}_{}".format(tag, i))
-        # Shrink a line that still overruns rather than letting it clip.
-        if img.width > PANEL_W - SIDE_PADDING:
-            scale = (PANEL_W - SIDE_PADDING) / img.width
-            img = img.resize((int(img.width * scale), max(1, int(img.height * scale))),
-                             Image.LANCZOS)
-        imgs.append(img)
+    imgs = [_text_image(line, FONT_SIZE, colour, tmp_dir, "{}_{}".format(tag, i))
+            for i, line in enumerate(lines)]
 
+    # One scale for the whole caption, never per line. Fitting each line on its
+    # own makes a short second line tower over a long first one, which reads as
+    # a mistake rather than as emphasis.
+    widest = max(i.width for i in imgs)
     total_h = sum(i.height for i in imgs) + LINE_GAP * (len(imgs) - 1)
+    scale = min(1.0,
+                (PANEL_W - SIDE_PADDING) / widest,
+                (PANEL_H - 28) / total_h)
+    if scale < 1.0:
+        imgs = [i.resize((max(1, int(i.width * scale)), max(1, int(i.height * scale))),
+                         Image.LANCZOS) for i in imgs]
+        total_h = sum(i.height for i in imgs) + LINE_GAP * (len(imgs) - 1)
+
     y = (PANEL_H - total_h) // 2
     for img in imgs:
         panel.alpha_composite(img, ((PANEL_W - img.width) // 2, y))
