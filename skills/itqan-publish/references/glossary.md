@@ -52,6 +52,28 @@ Real examples from real calls, with what was actually said:
 | تجلت كل الافكار حالتي | سجلت كل الافكار حقتي |
 | تكالين | اتكاليين |
 | يمدينا | يمديني |
+| يا صدق | يا صلاح (a name, not صديق) |
+| يا اصام | يا عصام |
+| مخلال | من خلال |
+| شعر كيف | شايف كيف |
+| دحان / ده حان | دحين |
+| يصطى | يسطى |
+| انشان | عشان |
+| واطلا الفكرة | واصلا فكرة |
+| سجد الملاحظات | اسجل الملاحظات |
+| وليجيت الثروت | ولقيت الظروف |
+| كاسموني | كده سموني |
+| فيها اختراق | فيها اختلاط (at a wedding) |
+
+Product names recur and are always worth fixing, because a viewer who uses
+them will spot it instantly:
+
+| Heard | Actually |
+|---|---|
+| كلوت / كلاود | كلود |
+| جميناي | جيميناي |
+| شا جي بي تي | شات جي بي تي |
+| وتسابق | واتساب |
 
 The pattern is worth understanding rather than memorising: the model
 substitutes a common word for an uncommon one that sounds similar. When a line
@@ -68,13 +90,18 @@ Saudi dialect is not broken Modern Standard Arabic. Leave it alone:
 - Code-switching mid-sentence into English is normal in these calls and should
   be preserved exactly as spoken
 
-**The trainee is often not Saudi.** عصام is, so his side reads as Najdi; a
-trainee may not, and their dialect is not an error to be normalised toward his.
-One call had **شو** rather than وش, **إشي** for "something", and ما‑...‑ش
-negation (**ما حطيتش**) — all Levantine, all correct, and all things that look
-wrong if you are reading the transcript expecting Saudi. Two people speaking
-different dialects to each other is what the recording actually contains, and
-flattening one of them into the other misrepresents the call.
+**The trainee is often not Saudi, and عصام moves toward them.** One call had
+**شو**, **إشي** and ما‑...‑ش negation (**ما حطيتش**) — Levantine. Another was
+with an Egyptian trainee, and عصام spent most of it in Egyptian himself:
+**عامل ايه**, **يسطى**, **بتاع**, **مش**, **معلش**, **حتة**, **كده** — mixed
+with his own Saudi **وش**, **كذا**, **مدري ايش**, **يمدين**, **دحين**,
+sometimes inside one sentence.
+
+So do not assume a fixed dialect for either speaker, and do not "correct"
+toward one. Read what the line is doing: a Saudi form on the trainee's track or
+an Egyptian one on عصام's is usually accommodation between two people, not a
+transcription error. Flattening either direction misrepresents the call and
+loses the thing that makes it sound like a real conversation.
 
 Rewriting dialect into formal Arabic makes the captions read as a translation
 of the conversation rather than a record of it, and loses the voice that makes

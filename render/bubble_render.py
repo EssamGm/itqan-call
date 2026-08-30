@@ -69,6 +69,17 @@ NAME_MAX_H = int(DIAMETER * 0.30)
 PODCAST_LUFS = -16.0
 VIDEO_LUFS = -14.0
 TRUE_PEAK = -1.0        # dBTP; the ceiling every platform asks for
+
+# Headroom left below that ceiling for the AAC encoder to overshoot into.
+# loudnorm enforces its ceiling on the PCM it outputs, but a lossy encoder
+# reconstructs a slightly different waveform and its peaks land wherever they
+# land - the more high-frequency energy, the further. On a call where the
+# trainee's weak connection needed the full +7 dB of air back, the encoded
+# master came out at +0.09 dBFS: above full scale, from a mix loudnorm had
+# just held at -1.0. A limiter here rather than a lower loudnorm ceiling
+# matters, because lowering the ceiling makes loudnorm pull the whole mix
+# down to reach it, costing loudness on every call to fix peaks on a few.
+ENCODE_HEADROOM = -2.0  # dBFS hard ceiling before encoding
 TARGET_LRA = 7.0        # spoken word sits tight so quiet moments stay audible
 
 # Per-voice cleanup before mixing. No denoiser: the call platform's own noise
@@ -275,14 +286,23 @@ def measure_loudnorm(path):
     return data
 
 
-def loudnorm_filter(target, measured):
-    """A loudnorm filter string, two-pass when a measurement is available."""
+def master_filter(target, measured):
+    """
+    The mastering chain: normalise to target, then guarantee the ceiling.
+
+    The limiter is what actually holds the peak, because loudnorm's ceiling
+    applies to the PCM it emits and the encoder that follows does not honour
+    it. Since it only touches the loudest transients, integrated loudness is
+    unaffected - which is the point of doing it here instead of asking
+    loudnorm for a lower ceiling and paying for it in loudness everywhere.
+    """
     base = "loudnorm=I={}:TP={}:LRA={}".format(target, TRUE_PEAK, TARGET_LRA)
-    if not measured:
-        return base
-    return base + ":measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}".format(
-        measured["input_i"], measured["input_lra"],
-        measured["input_tp"], measured["input_thresh"])
+    if measured:
+        base += ":measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}".format(
+            measured["input_i"], measured["input_lra"],
+            measured["input_tp"], measured["input_thresh"])
+    return "{},alimiter=limit={:.4f}:level=disabled".format(
+        base, 10.0 ** (ENCODE_HEADROOM / 20.0))
 
 
 def source_size(path):
@@ -762,12 +782,12 @@ def main():
         # An input pad can only be consumed once, hence the split.
         filt += ";[{}:a]asplit=2[mv][ma]".format(mix_idx)
         filt += ";[mv]{},aresample=48000[aout_v]".format(
-            loudnorm_filter(VIDEO_LUFS, measured_mix))
+            master_filter(VIDEO_LUFS, measured_mix))
         # Fold to mono BEFORE normalising. Downmixing afterwards sums the
         # channels and pushes the true peak back above the ceiling loudnorm
         # had just enforced - measured at +0.6 dBFS doing it the other way.
         filt += ";[ma]aformat=channel_layouts=mono,{},aresample=48000[aout_a]".format(
-            loudnorm_filter(PODCAST_LUFS, measured_mono))
+            master_filter(PODCAST_LUFS, measured_mono))
 
         encoder = pick_encoder(args.encoder)
         quality = (["-cq", "23", "-preset", "p5"] if encoder == "h264_nvenc"
