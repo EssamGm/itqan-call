@@ -170,6 +170,140 @@ MAX_MATCH_CUT_DB = 4.0
 TRAINEE_LIFT_DB = 1.5
 
 
+# ---------------------------------------------------------------------------
+# Conversational timing
+# ---------------------------------------------------------------------------
+#
+# A recorded call runs slower than the conversation felt to the people having
+# it. Each person hears the other a network trip late, thinks, and answers -
+# and the server stamps that answer when it arrives, a second trip later. So
+# every handover carries about a round trip of dead air that neither speaker
+# experienced. On a call between Riyadh and Cairo the coach noticed it himself
+# and put it at "about half a second"; doubled, that is a second of hesitation
+# inserted between two people who were not hesitating.
+#
+# Only handovers are shortened. A pause inside one person's own turn is their
+# rhythm and is left exactly as it was - what gets closed is the space between
+# one person stopping and the other starting. Nothing is stretched, and no gap
+# is closed completely, because real conversation does not have zero-length
+# turn boundaries either.
+TIGHTEN_FRAME = 0.02        # analysis frame
+TIGHTEN_FLOOR_DB = -40.0    # above these calls' noise floor, below any speech
+TIGHTEN_HANGOVER = 0.25     # a speaker stays "active" this long past their last
+                            # frame, so pauses between words are not read as
+                            # handovers and chopped
+MIN_TURN_GAP = 0.70         # shorter than this already sounds like conversation
+TARGET_TURN_GAP = 0.35      # what a shortened handover becomes
+MAX_TURN_REMOVE = 1.20      # ceiling per gap: roughly one round trip on a bad
+                            # line, so a genuine long pause stays a long pause
+
+
+def _activity(path, offset, total, np):
+    """Per-frame speech activity for one track, on the shared timeline."""
+    sr = 8000
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1",
+                        "-ar", str(sr), "-f", "s16le", "-"], capture_output=True)
+    x = np.frombuffer(p.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+
+    n = int(total / TIGHTEN_FRAME) + 1
+    act = np.zeros(n, dtype=bool)
+    step = int(sr * TIGHTEN_FRAME)
+    start = int(round(offset / TIGHTEN_FRAME))
+    usable = min(len(x) // step, n - start)
+    if usable > 0:
+        frames = x[:usable * step].reshape(usable, step)
+        rms = np.sqrt(np.mean(frames ** 2, axis=1))
+        with np.errstate(divide="ignore"):
+            db = 20.0 * np.log10(np.maximum(rms, 1e-9))
+        act[start:start + usable] = db > TIGHTEN_FLOOR_DB
+
+    hang = int(TIGHTEN_HANGOVER / TIGHTEN_FRAME)
+    if hang:
+        padded = np.zeros(n + hang, dtype=bool)
+        for k in range(hang):
+            padded[k:k + n] |= act
+        act = padded[:n]
+    return act
+
+
+def plan_tightening(paths, offsets, total):
+    """
+    Spans of the aligned timeline to delete.
+
+    A span qualifies only when both tracks are quiet across it *and* the
+    speaker changes over it. That second test is what keeps this honest: it
+    distinguishes a handover, where the delay is an artefact of the network,
+    from someone pausing mid-thought, where the delay is the person.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        sys.stderr.write("numpy not available - leaving conversational timing alone\n")
+        return []
+
+    a, b = [_activity(p, o, total, np) for p, o in zip(paths, offsets)]
+    quiet = ~(a | b)
+    spans = []
+    n = len(quiet)
+    i = 0
+    while i < n:
+        if not quiet[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and quiet[j]:
+            j += 1
+        gap = (j - i) * TIGHTEN_FRAME
+        # Bounded on both sides by speech, long enough to notice, and the floor
+        # actually changes hands.
+        if gap >= MIN_TURN_GAP and i > 0 and j < n:
+            before = 0 if a[i - 1] else 1
+            after = 0 if a[j] else 1
+            if before != after:
+                remove = min(MAX_TURN_REMOVE, gap - TARGET_TURN_GAP)
+                if remove > 0.05:
+                    mid = (i + j) / 2.0 * TIGHTEN_FRAME
+                    spans.append((mid - remove / 2.0, mid + remove / 2.0))
+        i = j
+    return spans
+
+
+def remap_time(t, spans):
+    """Move a timestamp from the original timeline onto the tightened one."""
+    shift = 0.0
+    for s, e in spans:
+        if t >= e:
+            shift += e - s
+        elif t > s:
+            return s - shift      # inside a deleted span: pin to its edge
+        else:
+            break
+    return t - shift
+
+
+def apply_tightening(path, offset, spans, total, out_path):
+    """Write an offset-aligned copy of one track with the spans removed."""
+    keeps, cur = [], 0.0
+    for s, e in spans:
+        if s > cur:
+            keeps.append((cur, s))
+        cur = e
+    keeps.append((cur, total))
+
+    expr = "+".join("between(t\\,{:.3f}\\,{:.3f})".format(s, e) for s, e in keeps)
+    chain = []
+    if offset > 0.001:
+        chain.append("adelay={}:all=1".format(int(round(offset * 1000))))
+    # Pad first so both tracks span the whole timeline: the same spans are cut
+    # from each, and that only keeps them in sync if they start out the same
+    # length.
+    chain += ["apad", "atrim=0:{:.3f}".format(total),
+              "aselect='{}'".format(expr), "asetpts=N/SR/TB"]
+    run(["ffmpeg", "-y", "-v", "error", "-i", path,
+         "-af", ",".join(chain), "-ar", "48000", "-c:a", "pcm_s24le", out_path])
+    return out_path
+
+
 def speech_only(path, tmp_dir, tag):
     """Strip the silence, so a voice is measured on the parts where it speaks."""
     out = os.path.join(tmp_dir, "speech_{}.wav".format(tag))
@@ -592,6 +726,9 @@ def main():
                     help="static bubbles; no speaking halo")
     ap.add_argument("--no-match", action="store_true",
                     help="skip matching the trainee tone to the coach")
+    ap.add_argument("--no-tighten", action="store_true",
+                    help="keep every silence as recorded, including the network "
+                         "lag at each handover")
     ap.add_argument("--no-cleanup", action="store_true",
                     help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
@@ -620,6 +757,30 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="itqan-render-")
     try:
+        # Close the network dead air at handovers, before anything is measured
+        # or drawn. The transcript is still made from the original files, so the
+        # cache and any hand corrections survive; its timings are moved onto the
+        # new timeline afterwards.
+        orig = (args.a, args.b)
+        orig_offsets = (args.a_offset, args.b_offset)
+        spans = []
+        if (not args.no_tighten
+                and all(t["has_audio"] for t in tracks)
+                and not any(t["has_video"] for t in tracks)):
+            spans = plan_tightening(orig, orig_offsets, total)
+        if spans:
+            removed = sum(e - s for s, e in spans)
+            args.a = apply_tightening(orig[0], orig_offsets[0], spans, total,
+                                      os.path.join(tmp, "tight_a.wav"))
+            args.b = apply_tightening(orig[1], orig_offsets[1], spans, total,
+                                      os.path.join(tmp, "tight_b.wav"))
+            args.a_offset = args.b_offset = 0.0
+            total -= removed
+            tracks = [probe(args.a), probe(args.b)]
+            for t in tracks:
+                t["crop"] = None
+            print("tightened {} handovers, {:.1f}s of network lag removed"
+                  .format(len(spans), removed), file=sys.stderr)
         mask = os.path.join(tmp, "mask.png")
         disc_a = os.path.join(tmp, "disc_a.png")
         disc_b = os.path.join(tmp, "disc_b.png")
@@ -645,9 +806,14 @@ def main():
         if args.captions:
             import transcribe as tr
             print("transcribing both speakers ...", file=sys.stderr)
-            per_track = [tr.transcribe(args.a), tr.transcribe(args.b)]
-            segs = tr.merge(per_track, [args.a_offset, args.b_offset],
-                            ["coach", "trainee"])
+            per_track = [tr.transcribe(orig[0]), tr.transcribe(orig[1])]
+            segs = tr.merge(per_track, list(orig_offsets), ["coach", "trainee"])
+            if spans:
+                # Same edit, applied to the words.
+                for s in segs:
+                    s["start"] = remap_time(s["start"], spans)
+                    s["end"] = remap_time(s["end"], spans)
+                segs = [s for s in segs if s["end"] - s["start"] > 0.12]
             print("  {} caption lines".format(len(segs)), file=sys.stderr)
             if segs:
                 caption_list = cap.build_caption_track(

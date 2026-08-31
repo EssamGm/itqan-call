@@ -6,6 +6,7 @@
  */
 
 import { DailyProvider, ROLE_TRAINEE } from "./provider-daily.js";
+import { keepAwake, letSleep } from "./wakelock.js";
 
 const provider = new DailyProvider();
 
@@ -99,6 +100,7 @@ $("consent-ok").addEventListener("click", async () => {
       onJoined: () => {
         show("screen-call");
         startTimer();
+        keepAwake();
       },
       onPeerLeft: () => endCall(),
       // The call ended itself: peer gone, never answered, or our own
@@ -151,6 +153,7 @@ const AUTO_END_TEXT = {"peer-gone": "انقطع الاتصال بالطرف ال
 
 async function endCall(note) {
   const seconds = stopTimer();
+  letSleep();
   await provider.leave().catch(() => {});
   const audio = $("remote-audio");
   audio.srcObject = null;

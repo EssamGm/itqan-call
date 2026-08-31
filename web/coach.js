@@ -7,6 +7,7 @@
  */
 
 import { DailyProvider } from "./provider-daily.js";
+import { keepAwake, letSleep } from "./wakelock.js";
 import { COACH_NAME } from "./config.js";
 
 const provider = new DailyProvider();
@@ -96,6 +97,7 @@ $("answer-btn").addEventListener("click", async () => {
       onJoined: async () => {
         show("screen-call");
         startTimer();
+        keepAwake();
         // Per-person recording cannot be auto-started by the token, so start
         // it here. Silent on success; loud only if it fails.
         const ok = await provider.startRecording();
@@ -173,6 +175,7 @@ const AUTO_END_TEXT = {"peer-gone": "انقطع الاتصال بالطرف ال
 async function endCall(note) {
   if (!inCall) return;
   const seconds = stopTimer();
+  letSleep();
   // The coach hanging up ends the call for both sides.
   await provider.leave({ endForEveryone: true }).catch(() => {});
   const audio = $("remote-audio");
