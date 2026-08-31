@@ -174,28 +174,49 @@ TRAINEE_LIFT_DB = 1.5
 # Conversational timing
 # ---------------------------------------------------------------------------
 #
-# A recorded call runs slower than the conversation felt to the people having
-# it. Each person hears the other a network trip late, thinks, and answers -
-# and the server stamps that answer when it arrives, a second trip later. So
-# every handover carries about a round trip of dead air that neither speaker
-# experienced. On a call between Riyadh and Cairo the coach noticed it himself
-# and put it at "about half a second"; doubled, that is a second of hesitation
-# inserted between two people who were not hesitating.
+# A call carries its network delay into the recording, and the recording is
+# what gets published. Each person hears the other a trip late, so they answer
+# late - and worse, they start talking at the same moment, because neither has
+# heard the other begin. Live that is unavoidable and both people cope with it.
+# In a video it is simply hard to listen to.
 #
-# Only handovers are shortened. A pause inside one person's own turn is their
-# rhythm and is left exactly as it was - what gets closed is the space between
-# one person stopping and the other starting. Nothing is stretched, and no gap
-# is closed completely, because real conversation does not have zero-length
-# turn boundaries either.
-TIGHTEN_FRAME = 0.02        # analysis frame
-TIGHTEN_FLOOR_DB = -40.0    # above these calls' noise floor, below any speech
-TIGHTEN_HANGOVER = 0.25     # a speaker stays "active" this long past their last
-                            # frame, so pauses between words are not read as
-                            # handovers and chopped
-MIN_TURN_GAP = 0.70         # shorter than this already sounds like conversation
-TARGET_TURN_GAP = 0.35      # what a shortened handover becomes
-MAX_TURN_REMOVE = 1.20      # ceiling per gap: roughly one round trip on a bad
-                            # line, so a genuine long pause stays a long pause
+# Because each speaker is recorded to their own file, this is fixable
+# afterwards in a way it never is live: the two voices can be moved
+# independently, so one person speaks while the other is quiet.
+#
+# Most overlap on a laggy call is not two people interrupting each other. It
+# is one person finishing a point and pausing for the "ايوه" that tells them
+# the other is still there; the other has not heard the pause yet; the first
+# waits, decides it has been too long, and carries on - and the "ايوه" arrives
+# on top of the sentence they just started. Measured on a real call, the median
+# overlapping utterance began 0.08s after the other person's turn did. Eighty
+# milliseconds apart is not someone murmuring mid-sentence, it is two people
+# starting at the same instant.
+#
+# So a short utterance landing at a turn boundary is treated as an answer that
+# arrived late, and is put back in front of the turn it collided with - which
+# is where it was meant to go, and where it lands in a room. Only a murmur that
+# arrives well inside a sentence is left overlapping, because that one really
+# was said while listening.
+ALIGN_FRAME = 0.02          # analysis frame
+ALIGN_FLOOR_DB = -40.0      # above these calls' noise floor, below any speech
+ALIGN_HANGOVER = 0.25       # a speaker stays "active" this long past their last
+                            # frame, so pauses between words do not split a turn
+UTT_MERGE_GAP = 0.35        # runs closer together than this are one utterance
+UNDER_MIN_DEPTH = 1.50      # a murmur must land at least this far into a
+                            # sentence to count as said *while* listening
+UNDER_MAX_LEN = 1.20        # and be short enough to be a murmur at all
+LATE_ACK_WINDOW = 0.75      # two turns starting this close together started
+                            # together, whatever the timestamps say
+LATE_ACK_MAX_LEN = 1.20     # the short one of the pair is the late answer
+MIN_TURN_GAP = 0.20         # collisions are pushed apart to at least this
+MAX_TURN_GAP = 1.00         # and long waits pulled in to at most this
+# A pause inside one person's own turn is their rhythm and is kept - up to a
+# point. On a real call one ran to 19.6 seconds: the coach waiting, in silence,
+# for a trainee whose connection had dropped without either of them knowing.
+# Live that is just an awkward moment; in something published to be listened
+# to it is nothing at all, and long enough for a listener to leave.
+MAX_SAME_SPEAKER_GAP = 2.00
 
 
 def _activity(path, offset, total, np):
@@ -205,19 +226,19 @@ def _activity(path, offset, total, np):
                         "-ar", str(sr), "-f", "s16le", "-"], capture_output=True)
     x = np.frombuffer(p.stdout, dtype=np.int16).astype(np.float32) / 32768.0
 
-    n = int(total / TIGHTEN_FRAME) + 1
+    n = int(total / ALIGN_FRAME) + 1
     act = np.zeros(n, dtype=bool)
-    step = int(sr * TIGHTEN_FRAME)
-    start = int(round(offset / TIGHTEN_FRAME))
+    step = int(sr * ALIGN_FRAME)
+    start = int(round(offset / ALIGN_FRAME))
     usable = min(len(x) // step, n - start)
     if usable > 0:
         frames = x[:usable * step].reshape(usable, step)
         rms = np.sqrt(np.mean(frames ** 2, axis=1))
         with np.errstate(divide="ignore"):
             db = 20.0 * np.log10(np.maximum(rms, 1e-9))
-        act[start:start + usable] = db > TIGHTEN_FLOOR_DB
+        act[start:start + usable] = db > ALIGN_FLOOR_DB
 
-    hang = int(TIGHTEN_HANGOVER / TIGHTEN_FRAME)
+    hang = int(ALIGN_HANGOVER / ALIGN_FRAME)
     if hang:
         padded = np.zeros(n + hang, dtype=bool)
         for k in range(hang):
@@ -226,83 +247,162 @@ def _activity(path, offset, total, np):
     return act
 
 
-def plan_tightening(paths, offsets, total):
-    """
-    Spans of the aligned timeline to delete.
+def _utterances(act):
+    """Contiguous speech, with near-touching runs treated as one utterance."""
+    raw, i, n = [], 0, len(act)
+    while i < n:
+        if act[i]:
+            j = i
+            while j < n and act[j]:
+                j += 1
+            raw.append([i * ALIGN_FRAME, j * ALIGN_FRAME])
+            i = j
+        else:
+            i += 1
+    out = []
+    for r in raw:
+        if out and r[0] - out[-1][1] < UTT_MERGE_GAP:
+            out[-1][1] = r[1]
+        else:
+            out.append(list(r))
+    return out
 
-    A span qualifies only when both tracks are quiet across it *and* the
-    speaker changes over it. That second test is what keeps this honest: it
-    distinguishes a handover, where the delay is an artefact of the network,
-    from someone pausing mid-thought, where the delay is the person.
+
+def plan_alignment(paths, offsets, total):
+    """
+    Decide where each utterance should sit so the two voices take turns.
+
+    Returns (utterances, new_total), each utterance carrying its track, its
+    original span, and the new start it should move to. None if there is
+    nothing to work with.
     """
     try:
         import numpy as np
     except ImportError:
         sys.stderr.write("numpy not available - leaving conversational timing alone\n")
-        return []
+        return None
 
-    a, b = [_activity(p, o, total, np) for p, o in zip(paths, offsets)]
-    quiet = ~(a | b)
-    spans = []
-    n = len(quiet)
-    i = 0
-    while i < n:
-        if not quiet[i]:
-            i += 1
-            continue
-        j = i
-        while j < n and quiet[j]:
-            j += 1
-        gap = (j - i) * TIGHTEN_FRAME
-        # Bounded on both sides by speech, long enough to notice, and the floor
-        # actually changes hands.
-        if gap >= MIN_TURN_GAP and i > 0 and j < n:
-            before = 0 if a[i - 1] else 1
-            after = 0 if a[j] else 1
-            if before != after:
-                remove = min(MAX_TURN_REMOVE, gap - TARGET_TURN_GAP)
-                if remove > 0.05:
-                    mid = (i + j) / 2.0 * TIGHTEN_FRAME
-                    spans.append((mid - remove / 2.0, mid + remove / 2.0))
-        i = j
-    return spans
+    act = [_activity(p, o, total, np) for p, o in zip(paths, offsets)]
+    utts = []
+    for t in (0, 1):
+        for s, e in _utterances(act[t]):
+            utts.append({"t": t, "s": s, "e": e})
+    if not utts:
+        return None
+    utts.sort(key=lambda u: u["s"])
 
+    # A murmur only counts as "said while listening" if it arrived well after
+    # the other person was already going. Anything landing near a turn boundary
+    # is an answer that was late, not a listener talking over a sentence.
+    by_track = {t: [u for u in utts if u["t"] == t] for t in (0, 1)}
+    for u in utts:
+        overlapping = [h for h in by_track[1 - u["t"]]
+                       if h["s"] < u["e"] and h["e"] > u["s"]]
+        u["back"] = False
+        if overlapping and (u["e"] - u["s"]) < UNDER_MAX_LEN:
+            host = max(overlapping,
+                       key=lambda h: min(u["e"], h["e"]) - max(u["s"], h["s"]))
+            u["back"] = (u["s"] - host["s"]) >= UNDER_MIN_DEPTH
 
-def remap_time(t, spans):
-    """Move a timestamp from the original timeline onto the tightened one."""
-    shift = 0.0
-    for s, e in spans:
-        if t >= e:
-            shift += e - s
-        elif t > s:
-            return s - shift      # inside a deleted span: pin to its edge
+    main = [u for u in utts if not u["back"]]
+    if not main:
+        return None
+
+    # Put the late answers back in front of what they collided with. Two turns
+    # that began within a breath of each other began together; the shorter one
+    # was the reply to whatever came before, so it goes first - which is the
+    # order the two people would have produced sitting in one room.
+    for i in range(len(main) - 1):
+        p, q = main[i], main[i + 1]
+        if (p["t"] != q["t"]
+                and q["s"] - p["s"] < LATE_ACK_WINDOW
+                and (q["e"] - q["s"]) < LATE_ACK_MAX_LEN
+                and (q["e"] - q["s"]) < (p["e"] - p["s"])):
+            main[i], main[i + 1] = q, p
+
+    # Lay the floor-holding turns out one after another. A gap between two
+    # turns by the same person is their own pause and is kept exactly; only the
+    # space where the floor changes hands is normalised, because that is the
+    # part the network invented.
+    prev = None
+    for u in main:
+        if prev is None:
+            u["ns"] = u["s"]
         else:
-            break
-    return t - shift
+            length = prev["e"] - prev["s"]
+            if u["t"] == prev["t"]:
+                # max(): reordering a late answer can leave two of one
+                # person's turns adjacent in the opposite order to the clock.
+                gap = max(MIN_TURN_GAP,
+                          min(MAX_SAME_SPEAKER_GAP, u["s"] - prev["e"]))
+            else:
+                gap = min(MAX_TURN_GAP, max(MIN_TURN_GAP, u["s"] - prev["e"]))
+            u["ns"] = prev["ns"] + length + gap
+        prev = u
+
+    # Backchannel travels with the turn it was spoken under, so it still lands
+    # in the same place inside that sentence.
+    for u in utts:
+        if not u["back"]:
+            continue
+        host = max(main, key=lambda m: min(u["e"], m["e"]) - max(u["s"], m["s"]))
+        u["ns"] = u["s"] + (host["ns"] - host["s"])
+
+    new_total = max(u["ns"] + (u["e"] - u["s"]) for u in utts) + 0.5
+    return utts, new_total
 
 
-def apply_tightening(path, offset, spans, total, out_path):
-    """Write an offset-aligned copy of one track with the spans removed."""
-    keeps, cur = [], 0.0
-    for s, e in spans:
-        if s > cur:
-            keeps.append((cur, s))
-        cur = e
-    keeps.append((cur, total))
+def alignment_map(utts, track, total, new_total, np):
+    """Piecewise old-time -> new-time for one speaker, for moving captions."""
+    pts = [(0.0, 0.0)]
+    for u in sorted((u for u in utts if u["t"] == track), key=lambda u: u["s"]):
+        pts.append((u["s"], u["ns"]))
+        pts.append((u["e"], u["ns"] + (u["e"] - u["s"])))
+    pts.append((max(total, pts[-1][0] + 0.001), new_total))
+    old = np.array([p[0] for p in pts], dtype=float)
+    new = np.array([p[1] for p in pts], dtype=float)
+    keep = np.concatenate([[True], np.diff(old) > 0])
+    return old[keep], new[keep]
 
-    expr = "+".join("between(t\\,{:.3f}\\,{:.3f})".format(s, e) for s, e in keeps)
-    chain = []
+
+def apply_alignment(path, offset, utts, track, new_total, out_path):
+    """Rebuild one speaker's track with each utterance moved to its new time."""
+    import numpy as np
+    sr = 48000
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1",
+                        "-ar", str(sr), "-f", "f32le", "-"], capture_output=True)
+    src = np.frombuffer(p.stdout, dtype=np.float32)
     if offset > 0.001:
-        chain.append("adelay={}:all=1".format(int(round(offset * 1000))))
-    # Pad first so both tracks span the whole timeline: the same spans are cut
-    # from each, and that only keeps them in sync if they start out the same
-    # length.
-    chain += ["apad", "atrim=0:{:.3f}".format(total),
-              "aselect='{}'".format(expr), "asetpts=N/SR/TB"]
-    run(["ffmpeg", "-y", "-v", "error", "-i", path,
-         "-af", ",".join(chain), "-ar", "48000", "-c:a", "pcm_s24le", out_path])
-    return out_path
+        src = np.concatenate([np.zeros(int(offset * sr), dtype=np.float32), src])
 
+    dst = np.zeros(int(new_total * sr) + sr, dtype=np.float32)
+    fade = int(0.008 * sr)
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    for u in utts:
+        if u["t"] != track:
+            continue
+        seg = src[int(u["s"] * sr):int(u["e"] * sr)].copy()
+        if len(seg) <= 2 * fade:
+            continue
+        # Only the speech is carried across, so nothing of the other person's
+        # bleed or of the original spacing comes with it. The short ramps sit
+        # in the silence the hangover already included, so they cost nothing
+        # and guarantee the splices cannot click.
+        seg[:fade] *= ramp
+        seg[-fade:] *= ramp[::-1]
+        d = int(u["ns"] * sr)
+        end = min(d + len(seg), len(dst))
+        if end > d:
+            dst[d:end] += seg[:end - d]
+
+    del src
+    raw = out_path + ".f32"
+    dst.tofile(raw)
+    del dst
+    run(["ffmpeg", "-y", "-v", "error", "-f", "f32le", "-ar", str(sr), "-ac", "1",
+         "-i", raw, "-c:a", "pcm_s24le", out_path])
+    os.remove(raw)
+    return out_path
 
 def speech_only(path, tmp_dir, tag):
     """Strip the silence, so a voice is measured on the parts where it speaks."""
@@ -726,9 +826,9 @@ def main():
                     help="static bubbles; no speaking halo")
     ap.add_argument("--no-match", action="store_true",
                     help="skip matching the trainee tone to the coach")
-    ap.add_argument("--no-tighten", action="store_true",
-                    help="keep every silence as recorded, including the network "
-                         "lag at each handover")
+    ap.add_argument("--no-align", action="store_true",
+                    help="keep the original timing, including the collisions "
+                         "and answer delays the network introduced")
     ap.add_argument("--no-cleanup", action="store_true",
                     help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
@@ -757,30 +857,40 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="itqan-render-")
     try:
-        # Close the network dead air at handovers, before anything is measured
-        # or drawn. The transcript is still made from the original files, so the
-        # cache and any hand corrections survive; its timings are moved onto the
-        # new timeline afterwards.
+        # Give the two voices their turns back, before anything is measured or
+        # drawn. The transcript is still made from the original files, so the
+        # cache and any hand corrections survive; its timings are moved onto
+        # the new timeline afterwards.
         orig = (args.a, args.b)
         orig_offsets = (args.a_offset, args.b_offset)
-        spans = []
-        if (not args.no_tighten
+        orig_total = total
+        aligned = None
+        if (not args.no_align
                 and all(t["has_audio"] for t in tracks)
                 and not any(t["has_video"] for t in tracks)):
-            spans = plan_tightening(orig, orig_offsets, total)
-        if spans:
-            removed = sum(e - s for s, e in spans)
-            args.a = apply_tightening(orig[0], orig_offsets[0], spans, total,
-                                      os.path.join(tmp, "tight_a.wav"))
-            args.b = apply_tightening(orig[1], orig_offsets[1], spans, total,
-                                      os.path.join(tmp, "tight_b.wav"))
+            aligned = plan_alignment(orig, orig_offsets, total)
+        if aligned:
+            utts, new_total = aligned
+            moved = sum(1 for u in utts if abs(u["ns"] - u["s"]) > 0.05)
+            collisions = sum(
+                1 for p, q in zip(sorted((u for u in utts if not u["back"]),
+                                         key=lambda u: u["s"]),
+                                  sorted((u for u in utts if not u["back"]),
+                                         key=lambda u: u["s"])[1:])
+                if p["t"] != q["t"] and q["s"] < p["e"])
+            args.a = apply_alignment(orig[0], orig_offsets[0], utts, 0, new_total,
+                                     os.path.join(tmp, "aligned_a.wav"))
+            args.b = apply_alignment(orig[1], orig_offsets[1], utts, 1, new_total,
+                                     os.path.join(tmp, "aligned_b.wav"))
             args.a_offset = args.b_offset = 0.0
-            total -= removed
+            total = new_total
             tracks = [probe(args.a), probe(args.b)]
             for t in tracks:
                 t["crop"] = None
-            print("tightened {} handovers, {:.1f}s of network lag removed"
-                  .format(len(spans), removed), file=sys.stderr)
+            print("aligned turns: {} utterances placed, {} moved, "
+                  "{} collisions separated ({:+.1f}s overall)".format(
+                      len(utts), moved, collisions, new_total - orig_total),
+                  file=sys.stderr)
         mask = os.path.join(tmp, "mask.png")
         disc_a = os.path.join(tmp, "disc_a.png")
         disc_b = os.path.join(tmp, "disc_b.png")
@@ -806,14 +916,23 @@ def main():
         if args.captions:
             import transcribe as tr
             print("transcribing both speakers ...", file=sys.stderr)
-            per_track = [tr.transcribe(orig[0]), tr.transcribe(orig[1])]
-            segs = tr.merge(per_track, list(orig_offsets), ["coach", "trainee"])
-            if spans:
-                # Same edit, applied to the words.
-                for s in segs:
-                    s["start"] = remap_time(s["start"], spans)
-                    s["end"] = remap_time(s["end"], spans)
+            per_track = [[dict(s) for s in tr.transcribe(p)] for p in orig]
+            if aligned:
+                # Each speaker's words follow that speaker's own voice, so the
+                # captions are moved through the same per-track map the audio
+                # was - not one shared timeline, which is the whole point of
+                # having moved the two voices independently.
+                import numpy as np
+                utts, new_total = aligned
+                for ti, segs_t in enumerate(per_track):
+                    old, new = alignment_map(utts, ti, orig_total, new_total, np)
+                    for s in segs_t:
+                        s["start"] = float(np.interp(s["start"] + orig_offsets[ti], old, new))
+                        s["end"] = float(np.interp(s["end"] + orig_offsets[ti], old, new))
+                segs = tr.merge(per_track, [0.0, 0.0], ["coach", "trainee"])
                 segs = [s for s in segs if s["end"] - s["start"] > 0.12]
+            else:
+                segs = tr.merge(per_track, list(orig_offsets), ["coach", "trainee"])
             print("  {} caption lines".format(len(segs)), file=sys.stderr)
             if segs:
                 caption_list = cap.build_caption_track(
