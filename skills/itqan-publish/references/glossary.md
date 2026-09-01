@@ -13,7 +13,7 @@ made again.
 
 | Correct | Seen as |
 |---|---|
-| إتقان | اتقان, أتقان, اتكان |
+| إتقان | اتقان, أتقان, اتكان, **يتقع**, **تتقع** |
 | عصام | (usually right) |
 | يونس | يونيس, يونز |
 | المتدرب | المدجرب, المتجرب |
@@ -21,6 +21,12 @@ made again.
 The programme is **إتقان** with a hamza — it is the brand, and getting it wrong
 in a caption is worse than any other single error, because it is the one word
 every viewer will recognise.
+
+**يتقع / تتقع is always إتقان.** It appears where a verb would fit
+grammatically, which is what makes it slip past: `ايش قصة تتقع الحين؟`,
+`راح يفهمون ايش هو يتقع`. Both are the brand name. It went uncorrected through
+one whole call because the line still half-parsed as Arabic — read any line
+containing it as if the word were إتقان and it will make sense.
 
 ## Programme vocabulary
 
