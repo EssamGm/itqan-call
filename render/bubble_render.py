@@ -122,8 +122,14 @@ GLOW_SIZE = 1180                # layers are clipped to the canvas anyway
 
 CAPTION_Y = 700
 
-LOGO_W = 240
+LOGO_H = 109            # the 903x412 mark at 240 wide, as it has always sat
 LOGO_Y = 900
+
+# A word in front of the mark - "بودكاست إتقان" - so a call video can never be
+# mistaken for the training material itself, which carries the bare wordmark.
+# Same white as the names, sized to the wordmark, to the RIGHT of it because
+# Arabic reads right to left and the label comes first.
+PODCAST_LABEL = "بودكاست"
 
 
 def run(cmd, **kw):
@@ -791,7 +797,9 @@ def build_filter(tracks, total, fps, idx):
     if idx["logo"] is not None:
         # The logo PNG is rendered on the same surface colour as the canvas, so
         # its rectangle disappears into the background with no alpha needed.
-        parts.append("[{}:v]scale={}:-1[logo]".format(idx["logo"], LOGO_W))
+        # Scaled by height, not width, so a wider lockup keeps the mark itself
+        # at exactly the size and place it has always had.
+        parts.append("[{}:v]scale=-1:{}[logo]".format(idx["logo"], LOGO_H))
         parts.append("[{}][logo]overlay=(W-w)/2:{}[wm]".format(stage, LOGO_Y))
         stage = "wm"
 
@@ -803,6 +811,52 @@ def logo_path():
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "assets", "logo-reversed.png")
     return p if os.path.isfile(p) else None
+
+
+def podcast_lockup(tmp_dir, label=PODCAST_LABEL):
+    """
+    The wordmark with a label in front of it, composed at the mark's own
+    resolution so nothing is resampled twice.
+
+    The text is shaped through HarfBuzz like the names are, read back as an
+    alpha mask and painted white, then set to the right of the mark with its
+    centre on the wordmark's centre. The canvas keeps the mark's full height,
+    so scaling the result to LOGO_H puts the mark exactly where the bare logo
+    has always been.
+    """
+    from PIL import Image
+
+    logo = logo_path()
+    if not logo or not label:
+        return logo
+
+    text_png = os.path.join(tmp_dir, "lockup_text.png")
+    render_text_png(label, text_png, size=300, color="#FFFFFF", bg=0x000000)
+    with Image.open(text_png) as raw:
+        alpha = raw.convert("L")
+    alpha = alpha.crop(alpha.getbbox())
+
+    with Image.open(logo) as lg:
+        mark = lg.convert("RGBA")
+    ink_l, ink_t, ink_r, ink_b = mark.getchannel("A").getbbox()
+    ink_h = ink_b - ink_t
+
+    # The word sits a little shorter than the wordmark, which has a hamza
+    # above its x-height; matching full heights would make it loom.
+    target_h = int(ink_h * 0.72)
+    alpha = alpha.resize(
+        (max(1, int(alpha.width * target_h / alpha.height)), target_h), Image.LANCZOS)
+    word = Image.new("RGBA", alpha.size, (255, 255, 255, 255))
+    word.putalpha(alpha)
+
+    gap = int(ink_h * 0.30)
+    canvas = Image.new("RGBA", (ink_r + gap + word.width + ink_l, mark.height), (0, 0, 0, 0))
+    canvas.paste(mark, (0, 0), mark)
+    canvas.paste(word, (ink_r + gap, ink_t + (ink_h - word.height) // 2), word)
+
+    out = os.path.join(tmp_dir, "lockup.png")
+    canvas.save(out)
+    return out
 
 
 def main():
@@ -826,6 +880,8 @@ def main():
                     help="static bubbles; no speaking halo")
     ap.add_argument("--no-match", action="store_true",
                     help="skip matching the trainee tone to the coach")
+    ap.add_argument("--no-label", action="store_true",
+                    help="bare wordmark, without the \"بودكاست\" in front of it")
     ap.add_argument("--no-align", action="store_true",
                     help="keep the original timing, including the collisions "
                          "and answer delays the network introduced")
@@ -940,7 +996,7 @@ def main():
                     {"coach": cap.COACH_INK, "trainee": cap.TRAINEE_INK},
                     tmp, total, args.fps)
 
-        logo = logo_path()
+        logo = logo_path() if args.no_label else podcast_lockup(tmp)
 
         # Build the input list and record where each asset landed.
         cmd = ["ffmpeg", "-y", "-v", "error", "-stats"]

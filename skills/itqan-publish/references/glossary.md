@@ -70,6 +70,30 @@ Real examples from real calls, with what was actually said:
 | وليجيت الثروت | ولقيت الظروف |
 | كاسموني | كده سموني |
 | فيها اختراق | فيها اختلاط (at a wedding) |
+| ابو عازي | أبو غازي (a kunya; the child's name appears correctly elsewhere) |
+| عصانة | عصام |
+| انك تدر | انك تكرر |
+| عندك ريال | عندك عيال |
+| اجفاهم | الفهم |
+| خلال السور | خلال الاسبوع |
+| في المسألة (when about time of day) | في المساء |
+| ما فيك حل | ما فيك حيل |
+| لازم تصور على | لازم تصبر على |
+| درامر | جرامر (grammar) |
+| مقبع | مقطع |
+| اسعى / اصعى | اصعب |
+| تفشت | طفشت |
+| السوعب | استوعب |
+| السفيد | استفيد |
+| الالتي تشري | التيتشر (the teacher) |
+| الهز والهير | his و her |
+| ومشكور على اجتماعك | ومشكور على اهتمامك |
+| السبوع / ده حين / ده حان / دحان / دحين | الاسبوع / ذحين |
+
+**Recurring shape:** the model drops or swaps one consonant in a word it does
+not expect — تدر for تكرر, ريال for عيال, تصور for تصبر, اسعى for اصعب. When a
+line is grammatical but means the wrong thing, try every word with one letter
+changed before deciding it is right as written.
 
 Product names recur and are always worth fixing, because a viewer who uses
 them will spot it instantly:
@@ -100,8 +124,12 @@ Saudi dialect is not broken Modern Standard Arabic. Leave it alone:
 **شو**, **إشي** and ما‑...‑ش negation (**ما حطيتش**) — Levantine. Another was
 with an Egyptian trainee, and عصام spent most of it in Egyptian himself:
 **عامل ايه**, **يسطى**, **بتاع**, **مش**, **معلش**, **حتة**, **كده** — mixed
-with his own Saudi **وش**, **كذا**, **مدري ايش**, **يمدين**, **دحين**,
+with his own Saudi **وش**, **كذا**, **مدري ايش**, **يمدين**, **ذحين**,
 sometimes inside one sentence.
+
+A third trainee was Hijazi (Jeddah): **ذحين**, **هرجة** ("a thing / what one
+says"), **بخش** ("I go into"), **بيتكلم / بيفهم** with the b- prefix. All
+correct, all things a Najdi ear reads as errors.
 
 So do not assume a fixed dialect for either speaker, and do not "correct"
 toward one. Read what the line is doing: a Saudi form on the trainee's track or
@@ -112,3 +140,12 @@ loses the thing that makes it sound like a real conversation.
 Rewriting dialect into formal Arabic makes the captions read as a translation
 of the conversation rather than a record of it, and loses the voice that makes
 the content worth publishing in the first place.
+
+## Spelling Essam has settled
+
+- **ذحين**, with ذ. He says it that way and wants it written that way. The
+  model produces دحين, ده حين, ده حان, دحان — all of them become ذحين.
+- **أبو** with the hamza in a kunya: أبو غازي, أبو مالك.
+- **Arabic marks only** — ؟ ، ؛ — never the Latin ? , ; next to Arabic script.
+  `transcribe.py` now does this itself; older cached transcripts may still
+  carry Latin marks and need the swap by hand.

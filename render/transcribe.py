@@ -65,6 +65,18 @@ def _model():
     return _MODEL
 
 
+def _arabic_marks(text):
+    """
+    Arabic punctuation for Arabic captions.
+
+    Whisper writes "?" and "," even for Arabic, and on screen next to Arabic
+    script a Latin question mark reads as a typo. Essam noticed before I did.
+    Only the marks Arabic actually has its own forms of are swapped; English
+    words inside a caption keep their own punctuation because they carry none.
+    """
+    return text.replace("?", "؟").replace(",", "،").replace(";", "؛")
+
+
 def _is_hallucination(seg, text):
     """
     Reject text invented out of near-silence.
@@ -131,7 +143,7 @@ def _split_into_captions(words):
     def flush():
         if not chunk:
             return
-        text = "".join(w.word for w in chunk).strip()
+        text = _arabic_marks("".join(w.word for w in chunk).strip())
         if not text:
             chunk.clear()
             return
@@ -206,7 +218,7 @@ def transcribe(path, language=None, cache=True):
             # broadcast subtitling leads the audio rather than chasing it.
             start = max(0.0, start - LEAD_SECONDS)
             out.append({"start": start, "end": max(end, start + 0.4),
-                        "text": text})
+                        "text": _arabic_marks(text)})
 
     if cache:
         try:
