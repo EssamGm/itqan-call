@@ -161,38 +161,33 @@ def pitch_block(tmp):
     return out
 
 
-def mic_badge(d=96):
-    """A small podcast microphone in a disc, for the seam between the two circles."""
+def episode_badge(number, tmp, d=96):
+    """The episode number in a small disc where the two circles meet."""
     from PIL import Image, ImageDraw
     s = 4
     S = d * s
     im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     dr = ImageDraw.Draw(im)
-    gold = _rgb(GOLD) + (255,)
-    dr.ellipse((0, 0, S - 1, S - 1), fill=gold)
+    dr.ellipse((0, 0, S - 1, S - 1), fill=_rgb(GOLD) + (255,))
     r = 4 * s
     dr.ellipse((r, r, S - 1 - r, S - 1 - r), fill=_rgb(DISC_FILL) + (255,))
-    cx = S // 2
-    # capsule
-    cw, ch = 22 * s, 34 * s
-    top = S // 2 - 26 * s
-    dr.rounded_rectangle((cx - cw // 2, top, cx + cw // 2, top + ch), radius=cw // 2, fill=gold)
-    for i in range(3):                       # grille
-        yy = top + 9 * s + i * 7 * s
-        dr.line((cx - cw // 2 + 5 * s, yy, cx + cw // 2 - 5 * s, yy), fill=_rgb(DISC_FILL) + (255,), width=2 * s)
-    # mount: an arc hugging the capsule's lower half
-    aw = cw + 14 * s
-    ay0 = top + ch - aw // 2 - 2 * s
-    dr.arc((cx - aw // 2, ay0, cx + aw // 2, ay0 + aw), start=0, end=180, fill=gold, width=3 * s)
-    # stem and base
-    sy0 = ay0 + aw // 2
-    dr.line((cx, sy0, cx, sy0 + 11 * s), fill=gold, width=3 * s)
-    dr.line((cx - 10 * s, sy0 + 11 * s, cx + 10 * s, sy0 + 11 * s), fill=gold, width=3 * s)
-    return im.resize((d, d), Image.LANCZOS)
+    im = im.resize((d, d), Image.LANCZOS)
+    t = text_layer(str(number), DISPLAY, 150, GOLD, tmp, "ep")
+    th = int(d * 0.50)
+    t = t.resize((max(1, int(t.width * th / t.height)), th), Image.LANCZOS)
+    im.alpha_composite(t, ((d - t.width) // 2, (d - t.height) // 2))
+    return im
 
 
-def arrow(p0, p2, ctrl, width=7, head=26):
-    """A short curved annotation arrow, gold, on a transparent full-frame layer."""
+def arrow(p0, p2, ctrl, width=7, head=32):
+    """
+    A curved annotation arrow, gold, on a transparent full-frame layer.
+
+    The body stops at the base of the head rather than running to the tip: a
+    thick line has a rounded end, and drawn all the way it pokes through the
+    point of the triangle and blunts it. So the curve is cut `head` back from
+    the tip along its own tangent, and the head is drawn from that base.
+    """
     from PIL import Image, ImageDraw
     import math
     s = 4
@@ -200,20 +195,27 @@ def arrow(p0, p2, ctrl, width=7, head=26):
     dr = ImageDraw.Draw(im)
     gold = _rgb(GOLD) + (255,)
     pts = []
-    for i in range(41):
-        t = i / 40
+    for i in range(61):
+        t = i / 60
         x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * ctrl[0] + t ** 2 * p2[0]
         y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * ctrl[1] + t ** 2 * p2[1]
         pts.append((x * s, y * s))
-    dr.line(pts, fill=gold, width=width * s, joint="curve")
-    # head, aligned to the curve's end tangent
-    (x1, y1), (x2, y2) = pts[-3], pts[-1]
-    ang = math.atan2(y2 - y1, x2 - x1)
+    tip = pts[-1]
+    (x1, y1) = pts[-4]
+    ang = math.atan2(tip[1] - y1, tip[0] - x1)
     hl = head * s
-    left = (x2 - hl * math.cos(ang - 0.5), y2 - hl * math.sin(ang - 0.5))
-    right = (x2 - hl * math.cos(ang + 0.5), y2 - hl * math.sin(ang + 0.5))
-    dr.polygon([(x2, y2), left, right], fill=gold)
-    dr.line(pts, fill=gold, width=width * s, joint="curve")
+    base = (tip[0] - hl * math.cos(ang), tip[1] - hl * math.sin(ang))
+    # The body runs a third of the way into the head, so the head's fill
+    # covers the join - a bending curve meets a straight head at a slight
+    # angle, and left exposed that reads as a kink.
+    inset = (tip[0] - hl * 0.66 * math.cos(ang), tip[1] - hl * 0.66 * math.sin(ang))
+    body = [q for q in pts if math.hypot(q[0] - tip[0], q[1] - tip[1]) > hl] + [base, inset]
+    if len(body) >= 2:
+        dr.line(body, fill=gold, width=width * s, joint="curve")
+    wing = hl * 0.58
+    left = (base[0] - wing * math.sin(ang), base[1] + wing * math.cos(ang))
+    right = (base[0] + wing * math.sin(ang), base[1] - wing * math.cos(ang))
+    dr.polygon([tip, left, right], fill=gold)
     return im.resize((W, H), Image.LANCZOS)
 
 
@@ -225,7 +227,7 @@ def lockup(tmp):
     l, t, r, b = mark.getchannel("A").getbbox()
     ink_h = b - t
     word = text_layer("بودكاست", NAME, 300, "#FFFFFF", tmp, "lockup")
-    th = int(ink_h * 0.72)
+    th = int(ink_h * 1.00)
     word = word.resize((int(word.width * th / word.height), th), Image.LANCZOS)
     gap = int(ink_h * 0.30)
     canvas = Image.new("RGBA", (r + gap + word.width + l, mark.height), (0, 0, 0, 0))
@@ -251,11 +253,11 @@ def build(a):
     img.alpha_composite(guest, (GUEST_CX - guest.width // 2, CY - guest.height // 2))
     img.alpha_composite(host, (HOST_CX - host.width // 2, CY - host.height // 2))
 
-    # A microphone where the two circles meet: the picture says "podcast"
-    # before the words do.
-    mic = mic_badge()
-    seam_x = (HOST_CX + GUEST_CX) // 2
-    img.alpha_composite(mic, (seam_x - mic.width // 2, CY + DIAMETER // 2 - mic.height // 2 - 6))
+    # The episode number where the two circles meet.
+    if a.episode:
+        ep = episode_badge(a.episode, tmp)
+        seam_x = (HOST_CX + GUEST_CX) // 2
+        img.alpha_composite(ep, (seam_x - ep.width // 2, CY + DIAMETER // 2 - ep.height // 2 - 6))
 
     # Three things on the frame, each with a gold arrow to what it is: the
     # host, the guest, the programme. A reader who has never heard of any of
@@ -305,12 +307,12 @@ def build(a):
     if a.host_label:
         hl = text_layer(a.host_label, SUB, 150, GOLD, tmp, "host")
         hl = hl.resize((int(hl.width * 60 / hl.height), 60), Image.LANCZOS)
-        hx = HOST_CX - DIAMETER // 2 - 30
-        hy = 58
+        hx = HOST_CX - DIAMETER // 2 - 70
+        hy = 50
         img.alpha_composite(hl, (hx, hy))
-        p0 = (hx + hl.width // 2 + 26, hy + hl.height + 10)
-        p2 = (HOST_CX - int(DIAMETER * 0.26), CY - int(DIAMETER * 0.44))
-        img.alpha_composite(arrow(p0, p2, (p0[0] + 8, (p0[1] + p2[1]) // 2 + 10)))
+        p0 = (HOST_CX - int(DIAMETER * 0.18), CY - int(DIAMETER * 0.47))
+        p2 = (hx + hl.width // 2 + 10, hy + hl.height + 14)
+        img.alpha_composite(arrow(p0, p2, (p0[0] + 10, p2[1] + 40)))
 
     out = a.out
     img.convert("RGB").save(out, quality=95)
@@ -324,6 +326,7 @@ def main():
     ap.add_argument("--line1", required=True)
     ap.add_argument("--line2", default="")
     ap.add_argument("--tag", default="", help="gold line under the headline")
+    ap.add_argument("--episode", type=int, default=0, help="episode number in the badge; 0 for none")
     ap.add_argument("--host-label", default="المدرب", help="word above the host photo; empty to omit")
     ap.add_argument("--out", required=True)
     build(ap.parse_args())
