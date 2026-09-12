@@ -59,10 +59,13 @@ def text_to_svg(text, font_path=DEFAULT_FONT, size=100, color="#F2F5F8", pad=0.1
         glyphset[name].draw(pen)
         d = pen.getCommands()
         if d:
-            # Flip Y: font space is y-up, SVG is y-down.
+            # Flip Y: font space is y-up, SVG is y-down. Both offsets matter:
+            # y_offset is how the font lifts a mark clear of a tall base letter,
+            # and without it a shadda over ل lands on the ل rather than above it.
             paths.append(
                 '<path d="{}" transform="translate({:.2f},{:.2f}) scale({:.5f},{:.5f})"/>'
-                .format(d, (x + pos.x_offset) * scale, size, scale, -scale)
+                .format(d, (x + pos.x_offset) * scale, size - pos.y_offset * scale,
+                        scale, -scale)
             )
         x += pos.x_advance
 
