@@ -36,6 +36,10 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server")
 )
 from session_logic import _load_env_file  # noqa: E402
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "render")
+)
+import callfolder as cf  # noqa: E402
 
 DAILY_API = "https://api.daily.co/v1"
 ROOT = os.environ.get("ITQAN_ROOT", r"C:\Itqan")
@@ -44,9 +48,9 @@ PUB_DIR = os.path.join(ROOT, "recordings", "published")
 LOG_DIR = os.path.join(ROOT, "logs")
 STATE_FILE = os.path.join(LOG_DIR, "processed.json")
 
-RENDERER = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "render", "bubble_render.py"
-)
+RENDER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "render")
+TRANSCRIBER = os.path.join(RENDER_DIR, "transcribe.py")
+ALIGNER = os.path.join(RENDER_DIR, "align.py")
 
 # Must match INSTANCE_IDS in web/provider-daily.js.
 INSTANCE_COACH = "5c0ac400-0000-4000-8000-000000000001"
@@ -161,69 +165,103 @@ def assign_roles(pair):
 
 
 def process_pair(room, pair, done):
-    """Download both recordings for one call, render, then delete the cloud copies."""
+    """
+    Bring one call onto the laptop and get it ready for judgment.
+
+    Download both tracks into a folder of their own, write meta.json, run
+    transcription and alignment, and stop. Rendering is deliberately NOT here:
+    it waits for the corrections, the cuts and the package, which are Essam's
+    to make in his own time. Everything this function does is unattended, and
+    the slow part - an hour of transcription for a twenty-minute call - is
+    finished before he sits down.
+    """
     coach_rec, trainee_rec = assign_roles(pair)
     key = "|".join(sorted(r["id"] for r in pair))
-    log("processing room {} ({} recordings)".format(room, len(pair)))
+    log("fetching room {} ({} recordings)".format(room, len(pair)))
 
-    os.makedirs(RAW_DIR, exist_ok=True)
-    os.makedirs(PUB_DIR, exist_ok=True)
+    names = names_for_room(room)
+    starts = {"coach": float(coach_rec.get("start_ts") or 0),
+              "trainee": float(trainee_rec.get("start_ts") or 0)}
+    base = min(starts.values())
+    date = time.strftime("%Y-%m-%d", time.localtime(base))
+    folder = cf.folder_for(date, names.get("trainee") or room)
+    os.makedirs(folder, exist_ok=True)
 
-    local = {}
-    starts = {}
     for role, rec in (("coach", coach_rec), ("trainee", trainee_rec)):
+        dest = cf.path(folder, cf.AUDIO, role)
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            log("  {} already downloaded".format(role))
+            continue
         link = api("/recordings/{}/access-link".format(rec["id"]))
         url = link.get("download_link") or link.get("link")
         if not url:
             log("  no download link for the {} recording".format(role))
             return False
-        dest = os.path.join(RAW_DIR, "{}_{}.m4a".format(rec["id"], role))
         size = download(url, dest)
-        local[role] = dest
-        starts[role] = float(rec.get("start_ts") or 0)
         log("  {} recording: {:.1f} MB".format(role, size / 1e6))
 
-    # The two recordings start a moment apart; align them on the earlier one.
-    base = min(starts.values())
-    out_base = os.path.join(PUB_DIR, time.strftime("%Y-%m-%d_") + room)
+    cf.write_meta(folder, {
+        "date": date,
+        "host": names.get("coach") or "عصام",
+        "guest": names.get("trainee") or "",
+        "room": room,
+        "coach_id": coach_rec["id"],
+        "trainee_id": trainee_rec["id"],
+        "coach_offset": round(starts["coach"] - base, 3),
+        "trainee_offset": round(starts["trainee"] - base, 3),
+        "episode": None,
+    })
+    log("  folder: {}".format(folder))
 
-    names = names_for_room(room)
-    log("  names: coach={} trainee={}".format(
-        names.get("coach", "-"), names.get("trainee", "-")))
-
-    cmd = [
-        sys.executable, RENDERER,
-        "--a", local["coach"], "--b", local["trainee"],
-        "--a-name", names.get("coach", ""),
-        "--b-name", names.get("trainee", ""),
-        "--a-offset", "{:.3f}".format(starts["coach"] - base),
-        "--b-offset", "{:.3f}".format(starts["trainee"] - base),
-        "--out", out_base,
-    ]
-    log("  rendering ...")
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", env=env)
-    if result.returncode != 0:
-        log("  render FAILED - raw files kept for retry\n" + (result.stderr or "")[-800:])
-        return False
-    log("  rendered {}.mp4 + .m4a".format(os.path.basename(out_base)))
-
-    # Only now is it safe to remove the cloud copies: the archive exists locally.
+    # The archive exists locally; the cloud copy is what matters for PDPL and
+    # it can go. Transcription failing later loses nothing.
     for rec in pair:
         try:
             api("/recordings/{}".format(rec["id"]), method="DELETE")
         except urllib.error.HTTPError as e:
             log("  WARNING could not delete cloud copy {} ({})".format(rec["id"], e.code))
     log("  deleted cloud copies")
-
-    # The per-person files stay on disk. The cloud copy is what matters for
-    # PDPL and it is gone; keeping the local originals means a past call can be
-    # re-rendered when the renderer improves, without asking for a new call.
-    # Use --purge-raw to reclaim the space once you are happy with the output.
     done.add(key)
     save_state(done)
+
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    log("  transcribing (this is the slow part) ...")
+    r = subprocess.run([sys.executable, TRANSCRIBER,
+                        cf.path(folder, cf.AUDIO, "coach"), cf.path(folder, cf.AUDIO, "trainee")],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    if r.returncode != 0:
+        log("  transcription FAILED - run transcribe.py on the folder by hand\n"
+            + (r.stderr or "")[-600:])
+        return True
+    # transcribe.py caches beside the audio under its own name; the folder's
+    # canonical name is what every other stage reads.
+    for role in cf.TRACKS:
+        src = os.path.join(folder, "{}.v{}.transcript.json".format(role, _cache_version()))
+        if os.path.isfile(src):
+            cf.write_json(cf.path(folder, cf.TRANSCRIPT, role), cf.read_json(src))
+            os.remove(src)
+    r = subprocess.run([sys.executable, ALIGNER, folder],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    if r.returncode != 0:
+        log("  alignment FAILED\n" + (r.stderr or "")[-600:])
+        return True
+    log("  ready for judgment: " + (r.stdout or "").strip())
     return True
+
+
+def _cache_version():
+    sys.path.insert(0, RENDER_DIR)
+    import transcribe
+    return transcribe.CACHE_VERSION
+
+
+def _has_folder(pair):
+    ids = {r["id"] for r in pair}
+    for f in cf.list_calls():
+        m = cf.read_meta(f)
+        if {m.get("coach_id"), m.get("trainee_id")} & ids:
+            return True
+    return False
 
 
 def sweep():
@@ -245,7 +283,7 @@ def sweep():
             log("room {} has only 1 recording - waiting for its pair".format(room))
             continue
         pair = sorted(pair, key=lambda r: r.get("start_ts") or 0)[:2]
-        if "|".join(sorted(r["id"] for r in pair)) in done:
+        if "|".join(sorted(r["id"] for r in pair)) in done or _has_folder(pair):
             continue
         try:
             if process_pair(room, pair, done):

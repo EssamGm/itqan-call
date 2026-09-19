@@ -9,23 +9,43 @@ tool makes the text easy to work with and refuses to write back anything whose
 structure changed.
 
     transcript_tool.py dump <transcript.json>
-    transcript_tool.py apply <transcript.json> <corrected.txt>
+    transcript_tool.py apply <transcript.json> <corrections.txt>
     transcript_tool.py reapply <new.json> <old-corrected.json>
     transcript_tool.py check <transcript.json>
+
+corrections.txt carries CHANGED LINES ONLY - `index<TAB>corrected text`, one
+per line. Indices not listed pass through untouched, which makes deleting or
+reordering a caption impossible by construction rather than by instruction,
+and makes the file a readable diff of what was actually changed. A text of
+exactly `-` blanks the caption: the timing stays, nothing is shown. That is
+for garbage - hallucinated text, dropout artefacts - never for silencing
+something a person actually said; that decision belongs to REVIEW.
 """
 
+import io
 import json
 import os
 import sys
 
 
 def load(path):
-    with open(path, "r", encoding="utf-8") as fh:
+    with io.open(path, "r", encoding="utf-8-sig") as fh:
         return json.load(fh)
 
 
+def save(path, segs):
+    """UTF-8, no BOM, LF - the convention every file in a call folder follows."""
+    with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(segs, fh, ensure_ascii=False, indent=1)
+        fh.write("\n")
+
+
 def dump(path):
-    """Print one numbered line per caption, for correction."""
+    """Print one numbered line per caption, for correction. LF, even on Windows."""
+    try:
+        sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+    except AttributeError:
+        pass
     segs = load(path)
     for i, s in enumerate(segs):
         print("{}\t{}".format(i, s["text"].replace("\t", " ").replace("\n", " ")))
@@ -35,36 +55,35 @@ def apply(path, corrected_path):
     """
     Write corrected text back, keeping every timing exactly as it was.
 
-    The corrected file is `index<TAB>text` per line - the same shape `dump`
-    produces. Lines may be edited or left alone; they may not be added,
-    removed, or reordered, because the timings belong to the originals.
+    Only the lines listed are touched. An index outside the transcript is an
+    error rather than ignored, because it almost always means the file was
+    written against a different transcript.
     """
     segs = load(path)
     updates = {}
-    with open(corrected_path, "r", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.rstrip("\n")
-            if not raw.strip():
-                continue
-            if "\t" not in raw:
-                sys.exit("error: expected 'index<TAB>text', got: " + raw[:60])
-            idx, text = raw.split("\t", 1)
-            try:
-                updates[int(idx)] = text.strip()
-            except ValueError:
-                sys.exit("error: bad index: " + idx[:20])
+    for raw in io.open(corrected_path, "r", encoding="utf-8-sig").read().splitlines():
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        if "	" not in raw:
+            sys.exit("error: expected 'index<TAB>text', got: " + raw[:60])
+        idx, text = raw.split("	", 1)
+        try:
+            i = int(idx.strip())
+        except ValueError:
+            sys.exit("error: bad index: " + idx[:20])
+        if not 0 <= i < len(segs):
+            sys.exit("error: index {} is outside this transcript (0..{})".format(
+                i, len(segs) - 1))
+        updates[i] = text.strip()
 
-    missing = set(range(len(segs))) - set(updates)
-    extra = set(updates) - set(range(len(segs)))
-    if missing or extra:
-        sys.exit("error: corrected file must cover exactly lines 0..{}; "
-                 "missing {}, unexpected {}".format(
-                     len(segs) - 1, sorted(missing)[:5], sorted(extra)[:5]))
-
-    changed = 0
-    for i, s in enumerate(segs):
-        new = updates[i]
-        if new and new != s["text"]:
+    changed = blanked = 0
+    for i, new in updates.items():
+        s = segs[i]
+        if new == "-":
+            if s["text"] != "":
+                s["text"] = ""
+                blanked += 1
+        elif new and new != s["text"]:
             s["text"] = new
             changed += 1
 
@@ -73,10 +92,10 @@ def apply(path, corrected_path):
         os.replace(path, backup)
     else:
         os.remove(path)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(segs, fh, ensure_ascii=False, indent=1)
+    save(path, segs)
 
-    print("corrected {} of {} lines".format(changed, len(segs)))
+    print("corrected {} of {} lines{}".format(
+        changed, len(segs), ", blanked {}".format(blanked) if blanked else ""))
     print("original kept at " + os.path.basename(backup))
 
 
@@ -125,8 +144,7 @@ def reapply(new_path, old_path):
         os.replace(new_path, backup)
     else:
         os.remove(new_path)
-    with open(new_path, "w", encoding="utf-8") as fh:
-        json.dump(segs, fh, ensure_ascii=False, indent=1)
+    save(new_path, segs)
 
     print("carried over {} of {} corrections".format(applied, len(fixes)))
     stranded = [t for t in fixes if t not in used]
@@ -146,8 +164,6 @@ def check(path):
             problems.append("line {}: end before start".format(i))
         if i and s["start"] < segs[i - 1]["start"]:
             problems.append("line {}: out of order".format(i))
-        if not s["text"].strip():
-            problems.append("line {}: empty".format(i))
         if s["end"] - s["start"] > 8:
             problems.append("line {}: {:.0f}s is too long to read".format(
                 i, s["end"] - s["start"]))

@@ -30,6 +30,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arabic_text import render_text_png  # noqa: E402
 import captions as cap  # noqa: E402
+import callfolder as cf  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Brand - Etqan Brand Guidelines v1.1, dark mode surface.
@@ -80,6 +81,8 @@ TRUE_PEAK = -1.0        # dBTP; the ceiling every platform asks for
 # matters, because lowering the ceiling makes loudnorm pull the whole mix
 # down to reach it, costing loudness on every call to fix peaks on a few.
 ENCODE_HEADROOM = -2.0  # dBFS hard ceiling before encoding
+FADE_IN = 0.4           # seconds; a published piece opens and closes softly
+FADE_OUT = 0.6          # rather than starting mid-frame and stopping dead
 TARGET_LRA = 7.0        # spoken word sits tight so quiet moments stay audible
 
 # Per-voice cleanup before mixing. No denoiser: the call platform's own noise
@@ -409,6 +412,123 @@ def apply_alignment(path, offset, utts, track, new_total, out_path):
          "-i", raw, "-c:a", "pcm_s24le", out_path])
     os.remove(raw)
     return out_path
+
+# ---------------------------------------------------------------------------
+# Cuts and chapters - the second remap, from the aligned clock to the final one
+# ---------------------------------------------------------------------------
+#
+# REVIEW writes cuts.txt and PACKAGE writes chapters on the aligned clock, the
+# one conversation.tsv shows them. Render owns the arithmetic from there. It
+# used to be done by hand, three times, and the third time still had a
+# mistake in it.
+
+MIN_CHAPTER_GAP = 10.0      # YouTube rejects the whole list if two are closer
+
+
+def merge_spans(spans):
+    """Sorted, non-overlapping [(start, end)]."""
+    out = []
+    for s, e in sorted(spans):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def cut_time(t, spans):
+    """Aligned -> final. A time inside a cut collapses to where the cut closes."""
+    shift = 0.0
+    for s, e in spans:
+        if t >= e:
+            shift += e - s
+        elif t > s:
+            return s - shift
+        else:
+            break
+    return t - shift
+
+
+def inside_cut(t, spans):
+    return any(s <= t < e for s, e in spans)
+
+
+def apply_cuts(wav_path, spans, total, out_path):
+    """Remove the spans from one track. Both tracks get the same spans."""
+    keeps, cur = [], 0.0
+    for s, e in spans:
+        if s > cur:
+            keeps.append((cur, s))
+        cur = max(cur, e)
+    if total > cur:
+        keeps.append((cur, total))
+    expr = "+".join("between(t\\,{:.3f}\\,{:.3f})".format(s, e) for s, e in keeps)
+    run(["ffmpeg", "-y", "-v", "error", "-i", wav_path,
+         "-af", "aselect='{}',asetpts=N/SR/TB".format(expr),
+         "-ar", "48000", "-c:a", "pcm_s24le", out_path])
+    return out_path
+
+
+def remap_chapters(chapters, spans, final_total):
+    """
+    Chapters from the aligned clock onto the final one, with the rules that
+    stop the list failing silently:
+
+      - a chapter whose whole span falls inside a cut is dropped, and the one
+        before it runs on - moving it would label the wrong content
+      - a chapter that starts inside a cut moves to where the cut closes
+      - the first chapter is 0:00 whatever was cut before it
+      - two chapters closer than MIN_CHAPTER_GAP: the later one is dropped,
+        because YouTube rejects the entire list otherwise
+    Everything dropped or moved is reported, so the remap is reviewable.
+    """
+    notes = []
+    chapters = sorted(chapters)
+    kept = []
+    for i, (t, title) in enumerate(chapters):
+        # What is left of this chapter's own section once the cuts are made?
+        # If less than a chapter's worth survives, the title would sit on the
+        # next section's content, so it goes and the previous one runs on.
+        # This covers "the whole section was cut" and the nastier partial
+        # case where five seconds of it remain.
+        ft = cut_time(t, spans)
+        span_end = chapters[i + 1][0] if i + 1 < len(chapters) else None
+        surviving = (cut_time(span_end, spans) if span_end is not None
+                     else final_total) - ft
+        touched = any(s < (span_end if span_end is not None else 1e9) and e > t
+                      for s, e in spans)
+        # Only a cut can make this rule fire. Two chapters the author put
+        # close together are the spacing rule's business, and that one drops
+        # the later of the pair, not the earlier.
+        if touched and surviving < MIN_CHAPTER_GAP:
+            notes.append("dropped  {}  {}  ({:.0f}s of its section survives the cuts)".format(
+                fmt_mmss(t), title, max(0.0, surviving)))
+            continue
+        if inside_cut(t, spans):
+            notes.append("moved    {} -> {}  {}  (started inside a cut)".format(
+                fmt_mmss(t), fmt_mmss(ft), title))
+        kept.append((ft, title))
+    if kept:
+        if kept[0][0] > 0.05:
+            notes.append("clamped  {} -> 0:00  {}".format(fmt_mmss(kept[0][0]), kept[0][1]))
+        kept[0] = (0.0, kept[0][1])
+    out = []
+    for ft, title in kept:
+        if out and ft - out[-1][0] < MIN_CHAPTER_GAP:
+            notes.append("dropped  {}  {}  (under {:.0f}s after the previous)".format(
+                fmt_mmss(ft), title, MIN_CHAPTER_GAP))
+            continue
+        if ft >= final_total:
+            notes.append("dropped  {}  {}  (after the end)".format(fmt_mmss(ft), title))
+            continue
+        out.append((ft, title))
+    return out, notes
+
+
+def fmt_mmss(seconds):
+    s = int(round(seconds))
+    return "{}:{:02d}".format(s // 60, s % 60)
+
 
 def speech_only(path, tmp_dir, tag):
     """Strip the silence, so a voice is measured on the parts where it speaks."""
@@ -803,7 +923,8 @@ def build_filter(tracks, total, fps, idx):
         parts.append("[{}][logo]overlay=(W-w)/2:{}[wm]".format(stage, LOGO_Y))
         stage = "wm"
 
-    parts.append("[{}]format=yuv420p[vout]".format(stage))
+    parts.append("[{}]fade=t=in:st=0:d={},fade=t=out:st={:.3f}:d={},format=yuv420p[vout]"
+                 .format(stage, FADE_IN, max(0.0, total - FADE_OUT), FADE_OUT))
     return ";".join(parts)
 
 
@@ -862,9 +983,12 @@ def podcast_lockup(tmp_dir, label=PODCAST_LABEL):
 def main():
     ap = argparse.ArgumentParser(
         description="Render an Itqan call into a square bubble video.")
-    ap.add_argument("--a", required=True, help="track A (coach)")
-    ap.add_argument("--b", required=True, help="track B (trainee)")
-    ap.add_argument("--out", required=True, help="output path without extension")
+    ap.add_argument("--call", default="",
+                    help="a call folder; everything else is read from it and "
+                         "--a/--b/--out/--names/--offsets are ignored")
+    ap.add_argument("--a", default="", help="track A (coach)")
+    ap.add_argument("--b", default="", help="track B (trainee)")
+    ap.add_argument("--out", default="", help="output path without extension")
     ap.add_argument("--a-name", default="", help="name shown in bubble A")
     ap.add_argument("--b-name", default="", help="name shown in bubble B")
     ap.add_argument("--a-offset", type=float, default=0.0)
@@ -888,6 +1012,35 @@ def main():
     ap.add_argument("--no-cleanup", action="store_true",
                     help="skip per-voice EQ, de-essing and compression")
     args = ap.parse_args()
+
+    # A call folder is the normal way in. The loose flags remain for one-off
+    # renders of files that never went through the pipeline.
+    call = None
+    if args.call:
+        call = os.path.abspath(args.call)
+        meta = cf.read_meta(call)
+        args.a = cf.path(call, cf.AUDIO, "coach")
+        args.b = cf.path(call, cf.AUDIO, "trainee")
+        args.a_name = meta.get("host", "عصام")
+        args.b_name = meta.get("guest", "")
+        args.a_offset = float(meta.get("coach_offset", 0.0))
+        args.b_offset = float(meta.get("trainee_offset", 0.0))
+        args.out = cf.path(call, cf.FINAL)
+        args.captions = True
+        if not os.path.isfile(cf.path(call, cf.ALIGNMENT)):
+            sys.exit("error: no alignment.json in the call folder - run align.py first")
+        # Refuse before spending twenty minutes on a render that must not go out.
+        pending = [c for c in cf.read_cuts(call) if c["status"] == "ask"]
+        if pending:
+            print("not rendering: cuts.txt has {} row(s) marked `ask` that Essam "
+                  "has not decided:".format(len(pending)), file=sys.stderr)
+            for c in pending:
+                print("  {} -> {}  {}".format(fmt_mmss(c["start"]), fmt_mmss(c["end"]),
+                                            c["reason"]), file=sys.stderr)
+            print("change each to `cut` or `keep`, then render again.", file=sys.stderr)
+            sys.exit(2)
+    elif not (args.a and args.b and args.out):
+        sys.exit("error: give --call <folder>, or --a, --b and --out")
 
     for p in (args.a, args.b):
         if not os.path.isfile(p):
@@ -921,7 +1074,13 @@ def main():
         orig_offsets = (args.a_offset, args.b_offset)
         orig_total = total
         aligned = None
-        if (not args.no_align
+        if call:
+            # The plan align.py saved - never recomputed here, so the timeline
+            # judgment saw in conversation.tsv is the timeline that gets built.
+            saved = cf.read_json(cf.path(call, cf.ALIGNMENT))
+            aligned = (saved["utterances"], float(saved["new_total"]))
+            orig_total = float(saved["total"])
+        elif (not args.no_align
                 and all(t["has_audio"] for t in tracks)
                 and not any(t["has_video"] for t in tracks)):
             aligned = plan_alignment(orig, orig_offsets, total)
@@ -947,6 +1106,27 @@ def main():
                   "{} collisions separated ({:+.1f}s overall)".format(
                       len(utts), moved, collisions, new_total - orig_total),
                   file=sys.stderr)
+
+        # REVIEW's cuts, on the aligned clock. Removed from both tracks
+        # identically so they stay in step; captions and chapters go through
+        # the same map further down.
+        cut_spans = []
+        if call:
+            cut_spans = merge_spans([(c["start"], c["end"])
+                                     for c in cf.read_cuts(call) if c["status"] == "cut"])
+            cut_spans = [(max(0.0, s), min(total, e)) for s, e in cut_spans if e > s]
+        if cut_spans:
+            removed = sum(e - s for s, e in cut_spans)
+            args.a = apply_cuts(args.a, cut_spans, total, os.path.join(tmp, "cut_a.wav"))
+            args.b = apply_cuts(args.b, cut_spans, total, os.path.join(tmp, "cut_b.wav"))
+            total -= removed
+            tracks = [probe(args.a), probe(args.b)]
+            for t in tracks:
+                t["crop"] = None
+            print("cuts: {} span(s), {:.1f}s removed -> {:.1f}s".format(
+                len(cut_spans), removed, total), file=sys.stderr)
+            for s, e in cut_spans:
+                print("  {} -> {}".format(fmt_mmss(s), fmt_mmss(e)), file=sys.stderr)
         mask = os.path.join(tmp, "mask.png")
         disc_a = os.path.join(tmp, "disc_a.png")
         disc_b = os.path.join(tmp, "disc_b.png")
@@ -972,7 +1152,13 @@ def main():
         if args.captions:
             import transcribe as tr
             print("transcribing both speakers ...", file=sys.stderr)
-            per_track = [[dict(s) for s in tr.transcribe(p)] for p in orig]
+            if call:
+                # The folder's transcripts are the source of truth - they carry
+                # the corrections. transcribe() would look for a cache beside
+                # the m4a under its own naming and miss them.
+                per_track = [cf.read_json(cf.path(call, cf.TRANSCRIPT, t)) for t in cf.TRACKS]
+            else:
+                per_track = [[dict(s) for s in tr.transcribe(p)] for p in orig]
             if aligned:
                 # Each speaker's words follow that speaker's own voice, so the
                 # captions are moved through the same per-track map the audio
@@ -986,9 +1172,23 @@ def main():
                         s["start"] = float(np.interp(s["start"] + orig_offsets[ti], old, new))
                         s["end"] = float(np.interp(s["end"] + orig_offsets[ti], old, new))
                 segs = tr.merge(per_track, [0.0, 0.0], ["coach", "trainee"])
-                segs = [s for s in segs if s["end"] - s["start"] > 0.12]
             else:
                 segs = tr.merge(per_track, list(orig_offsets), ["coach", "trainee"])
+            if cut_spans:
+                # Same edit, applied to the words: a caption inside a cut goes,
+                # one straddling a cut keeps whatever part survives.
+                kept = []
+                for s in segs:
+                    if any(a <= s["start"] and s["end"] <= b for a, b in cut_spans):
+                        continue
+                    s["start"] = cut_time(s["start"], cut_spans)
+                    s["end"] = cut_time(s["end"], cut_spans)
+                    kept.append(s)
+                segs = kept
+            # A blanked caption (`-` in corrections.txt) keeps its timing and
+            # shows nothing; it must not reach the panel as an empty box.
+            segs = [s for s in segs
+                    if s["end"] - s["start"] > 0.12 and s["text"].strip()]
             print("  {} caption lines".format(len(segs)), file=sys.stderr)
             if segs:
                 caption_list = cap.build_caption_track(
@@ -1122,13 +1322,15 @@ def main():
         filt = build_filter(tracks, total, args.fps, idx)
         # An input pad can only be consumed once, hence the split.
         filt += ";[{}:a]asplit=2[mv][ma]".format(mix_idx)
-        filt += ";[mv]{},aresample=48000[aout_v]".format(
-            master_filter(VIDEO_LUFS, measured_mix))
+        afade = "afade=t=in:st=0:d={},afade=t=out:st={:.3f}:d={}".format(
+            FADE_IN, max(0.0, total - FADE_OUT), FADE_OUT)
+        filt += ";[mv]{},{},aresample=48000[aout_v]".format(
+            master_filter(VIDEO_LUFS, measured_mix), afade)
         # Fold to mono BEFORE normalising. Downmixing afterwards sums the
         # channels and pushes the true peak back above the ceiling loudnorm
         # had just enforced - measured at +0.6 dBFS doing it the other way.
-        filt += ";[ma]aformat=channel_layouts=mono,{},aresample=48000[aout_a]".format(
-            master_filter(PODCAST_LUFS, measured_mono))
+        filt += ";[ma]aformat=channel_layouts=mono,{},{},aresample=48000[aout_a]".format(
+            master_filter(PODCAST_LUFS, measured_mono), afade)
 
         encoder = pick_encoder(args.encoder)
         quality = (["-cq", "23", "-preset", "p5"] if encoder == "h264_nvenc"
@@ -1155,6 +1357,20 @@ def main():
 
     print("video: " + video_out)
     print("audio: " + audio_out)
+
+    if call:
+        pkg = cf.read_package(call)
+        chapters = [cf.parse_chapter(c) for c in (pkg or {}).get("chapters") or []]
+        if chapters:
+            final, notes = remap_chapters(chapters, cut_spans, total)
+            cf.write_text(cf.path(call, cf.CHAPTERS),
+                          "\n".join("{} {}".format(fmt_mmss(t), x) for t, x in final) + "\n")
+            print("chapters: {} of {} kept -> chapters.txt".format(len(final), len(chapters)))
+            for n in notes:
+                print("  " + n)
+        elif pkg is None:
+            print("chapters: no package.md yet - run PACKAGE, then render again "
+                  "or run chapters alone")
 
 
 if __name__ == "__main__":

@@ -321,15 +321,39 @@ def build(a):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--call", default="",
+                    help="a call folder: guest from meta.json, lines and episode from "
+                         "package.md, output thumb.png beside them")
     ap.add_argument("--photo", default=os.path.join(ROOT, "assets", "essam.jpg"))
-    ap.add_argument("--guest", required=True, help="name shown in the second circle")
-    ap.add_argument("--line1", required=True)
+    ap.add_argument("--guest", default="", help="name shown in the second circle")
+    ap.add_argument("--line1", default="")
     ap.add_argument("--line2", default="")
     ap.add_argument("--tag", default="", help="gold line under the headline")
     ap.add_argument("--episode", type=int, default=0, help="episode number in the badge; 0 for none")
     ap.add_argument("--host-label", default="المدرب", help="word above the host photo; empty to omit")
-    ap.add_argument("--out", required=True)
-    build(ap.parse_args())
+    ap.add_argument("--out", default="")
+    a = ap.parse_args()
+
+    if a.call:
+        import callfolder as cf
+        folder = os.path.abspath(a.call)
+        meta = cf.read_meta(folder)
+        pkg = cf.read_package(folder)
+        if pkg is None:
+            sys.exit("thumbnail: no package.md in the folder - run PACKAGE first")
+        a.guest = a.guest or meta.get("guest", "")
+        a.line1 = a.line1 or pkg.get("thumb_line1", "")
+        a.line2 = a.line2 or pkg.get("thumb_line2", "")
+        # The number comes from the ledger via meta.json; package.md only
+        # copies it, and may honestly say TODO if nothing was assigned yet.
+        ep = meta.get("episode") or pkg.get("episode")
+        a.episode = a.episode or (int(ep) if str(ep).isdigit() else 0)
+        a.out = a.out or cf.path(folder, cf.THUMB)
+        if not a.line1:
+            sys.exit("thumbnail: package.md has no thumb_line1")
+    elif not (a.guest and a.line1 and a.out):
+        sys.exit("thumbnail: give --call <folder>, or --guest, --line1 and --out")
+    build(a)
 
 
 if __name__ == "__main__":

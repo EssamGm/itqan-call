@@ -5,6 +5,12 @@ description: Turn a finished إتقان coaching call into a publish-ready squar
 
 # Publishing an Itqan call
 
+> **Superseded.** Calls now go through a folder per call
+> (`C:\Itqan\calls\<date>_<guest>\`) and three separate skills — CORRECT,
+> REVIEW, PACKAGE — that each read and write files there, in any order. See
+> `docs/PIPELINE.md`. This skill is kept for the loose-file path and for its
+> notes on what goes wrong; the correction rules in it still hold.
+
 A finished call becomes two files: a square 1080×1080 video with named speaker
 bubbles and captions, and a clean mono audio track for podcast apps. Both land
 in `C:\Itqan\recordings\published\`.
@@ -50,21 +56,21 @@ never re-transcribes.
 
 ### 3. Correct the transcript — the part that needs you
 
-Read `references/glossary.md` first. It holds the names, programme vocabulary,
+Read `skills/glossary.md` first. It holds the names, programme vocabulary,
 and the specific errors this model has made before.
 
 For each transcript:
 
 ```bash
-python skills/itqan-publish/scripts/transcript_tool.py dump <transcript.json> > /tmp/lines.txt
+python render/transcript_tool.py dump <transcript.json> > /tmp/lines.txt
 ```
 
 That gives you `index<TAB>text`, one caption per line. Work through it and
 write a corrected file in the same shape, then:
 
 ```bash
-python skills/itqan-publish/scripts/transcript_tool.py apply <transcript.json> /tmp/corrected.txt
-python skills/itqan-publish/scripts/transcript_tool.py check <transcript.json>
+python render/transcript_tool.py apply <transcript.json> /tmp/corrected.txt
+python render/transcript_tool.py check <transcript.json>
 ```
 
 `apply` refuses to write if lines were added, removed or reordered, because the
@@ -76,7 +82,7 @@ If a call has to be re-transcribed after it was corrected — a settings change,
 a better model — the corrections are recoverable rather than lost:
 
 ```bash
-python skills/itqan-publish/scripts/transcript_tool.py reapply <new.json> <old.json>
+python render/transcript_tool.py reapply <new.json> <old.json>
 ```
 
 It diffs the old transcript against its own backup to work out what was
@@ -101,7 +107,7 @@ loses the voice that makes the content worth publishing.
 ordinary; an invented one that reads confidently is worse, because a viewer who
 speaks Arabic will trust it.
 
-Add anything new you had to work out to `references/glossary.md`. That file is
+Add anything new you had to work out to `skills/glossary.md`. That file is
 the part of this pipeline that compounds.
 
 ### 4. Render

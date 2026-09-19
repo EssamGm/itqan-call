@@ -68,9 +68,10 @@ def pending():
     for room, pair in rooms.items():
         if room in skipped or len(pair) < 2:
             continue
-        # The agent keys its own state on the recording ids, so ask it rather
-        # than guessing - a call processed by the agent must not resurface.
-        if "|".join(sorted(x["id"] for x in pair)) in done:
+        # Three ways a call is no longer pending: the agent recorded it as
+        # done, it has a folder under C:\Itqan\calls, or it was skipped as a
+        # test. Any one is enough.
+        if "|".join(sorted(x["id"] for x in pair)) in done or agent._has_folder(pair):
             continue
         out.append({
             "room": room,
@@ -98,15 +99,17 @@ def main():
     if not calls:
         return
 
-    print("Unprocessed Itqan calls (recorded, no video made yet):")
+    print("Itqan calls in the cloud that have not been fetched:")
     for c in calls:
         when = time.strftime("%a %d %b %H:%M", time.localtime(c["start"]))
         mins, secs = divmod(c["seconds"], 60)
         print("  {}  {}:{:02d}  room {}".format(when, mins, secs, c["room"]))
     print("")
-    print("Ask which of these he wants a video of - some are test calls. To "
-          "process one, follow the itqan-publish skill. For a test call, run "
-          "agent/pending_calls.py --skip <room> so it stops being listed.")
+    print("Ask which of these are real. For a real one, run "
+          "`python agent/itqan_agent.py` - it fetches, transcribes and aligns into "
+          "C:\Itqan\calls\<date>_<guest>\ unattended (about an hour), then the "
+          "CORRECT, REVIEW and PACKAGE skills work from that folder in any order. "
+          "For a test call, `python agent/pending_calls.py --skip <room>`.")
 
 
 if __name__ == "__main__":
