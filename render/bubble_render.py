@@ -1029,6 +1029,9 @@ def main():
                     help="static bubbles; no speaking halo")
     ap.add_argument("--no-match", action="store_true",
                     help="skip matching the trainee tone to the coach")
+    ap.add_argument("--chapters-only", action="store_true",
+                    help="only rewrite chapters.txt from package.md and cuts.txt; "
+                         "no render. Seconds, for fixing a chapter title.")
     ap.add_argument("--no-label", action="store_true",
                     help="bare wordmark, without the \"بودكاست\" in front of it")
     ap.add_argument("--no-align", action="store_true",
@@ -1066,6 +1069,12 @@ def main():
             sys.exit(2)
     elif not (args.a and args.b and args.out):
         sys.exit("error: give --call <folder>, or --a, --b and --out")
+
+    if args.chapters_only:
+        if not call:
+            sys.exit("error: --chapters-only needs --call")
+        write_chapters(call)
+        return
 
     for p in (args.a, args.b):
         if not os.path.isfile(p):
@@ -1385,18 +1394,34 @@ def main():
     print("audio: " + audio_out)
 
     if call:
-        pkg = cf.read_package(call)
-        chapters = [cf.parse_chapter(c) for c in (pkg or {}).get("chapters") or []]
-        if chapters:
-            final, notes = remap_chapters(chapters, cut_spans, total)
-            cf.write_text(cf.path(call, cf.CHAPTERS),
-                          "\n".join("{} {}".format(fmt_mmss(t), x) for t, x in final) + "\n")
-            print("chapters: {} of {} kept -> chapters.txt".format(len(final), len(chapters)))
-            for n in notes:
-                print("  " + n)
-        elif pkg is None:
-            print("chapters: no package.md yet - run PACKAGE, then render again "
-                  "or run chapters alone")
+        write_chapters(call)
+
+
+def write_chapters(call):
+    """
+    chapters.txt from package.md and cuts.txt. Needs no render: the aligned
+    length comes from alignment.json and the cuts are known, so a chapter
+    title can be fixed in seconds rather than seventeen minutes.
+    """
+    pkg = cf.read_package(call)
+    if pkg is None:
+        print("chapters: no package.md yet - run PACKAGE first")
+        return
+    chapters = [cf.parse_chapter(c) for c in pkg.get("chapters") or []]
+    if not chapters:
+        print("chapters: package.md has none")
+        return
+    aligned_total = float(cf.read_json(cf.path(call, cf.ALIGNMENT))["new_total"])
+    spans = merge_spans([(c["start"], c["end"]) for c in cf.read_cuts(call)
+                         if c["status"] == "cut"])
+    spans = [(max(0.0, a), min(aligned_total, b)) for a, b in spans if b > a]
+    final_total = aligned_total - sum(b - a for a, b in spans)
+    final, notes = remap_chapters(chapters, spans, final_total)
+    cf.write_text(cf.path(call, cf.CHAPTERS),
+                  "\n".join("{} {}".format(fmt_mmss(t), x) for t, x in final) + "\n")
+    print("chapters: {} of {} kept -> chapters.txt".format(len(final), len(chapters)))
+    for n in notes:
+        print("  " + n)
 
 
 if __name__ == "__main__":
