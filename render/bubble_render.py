@@ -85,16 +85,41 @@ FADE_IN = 0.4           # seconds; a published piece opens and closes softly
 FADE_OUT = 0.6          # rather than starting mid-frame and stopping dead
 TARGET_LRA = 7.0        # spoken word sits tight so quiet moments stay audible
 
-# Per-voice cleanup before mixing. No denoiser: the call platform's own noise
-# suppression already leaves a digitally silent floor, so denoising here would
-# only add artefacts to audio that is already clean.
+# Per-voice cleanup before mixing, in broadcast order.
+#
+# Subtractive EQ, then dynamics, THEN de-essing, then tone. De-essing before
+# the compressor was the old order and it is backwards: compression raises the
+# relative level of sibilance, so the compressor simply re-amplified what the
+# de-esser had just removed. The compressor's attack is 15 ms, not 6: a fast
+# attack flattens the leading edge of every consonant, which is precisely the
+# part that carries intelligibility. Measured on a real call, this order and
+# attack gave +3.5 dB of consonant energy for the same loudness.
+#
+# No gate. It was measured at 0.0-0.3 dB of effect on quiet speech and the
+# vacuum between phrases was never its doing - WebRTC's noise suppression
+# punches those holes before the audio reaches this machine. No denoiser
+# either, for the same reason: the floor is already digitally silent.
 VOICE_CLEANUP = (
-    "highpass=f=80,"                                   # room rumble, handling
-    "deesser=i=0.3,"                                   # sibilance
-    "agate=threshold=0.004:ratio=3:attack=10:release=250,"  # keep pauses silent
-    "acompressor=threshold=-22dB:ratio=3:attack=6:release=180:makeup=3,"
+    "highpass=f=75,"                                   # rumble, handling
+    "equalizer=f=250:t=q:w=1.2:g=-2,"                  # low-mid mud
+    "acompressor=threshold=-20dB:ratio=2.5:attack=15:release=220:makeup=2,"
+    "deesser=i=0.25,"                                  # after compression
+    "equalizer=f=3200:t=q:w=0.9:g=2.5,"                # presence, consonants
     "alimiter=limit=0.95"
 )
+
+# A quiet room under everything.
+#
+# Between phrases the raw tracks fall to true digital silence - on one call,
+# 54.7% of samples were exactly zero - because the call platform's noise
+# suppression removes everything it can. No room is that quiet, and the ear
+# reads the drop as the line cutting out rather than a person pausing. That
+# single artefact is what stops the output sounding like a podcast even when
+# every word is clear. Pink noise, band-limited so it is neither rumble nor
+# hiss, sits under the mix at a level that is felt rather than heard. Measured:
+# digital silence 16% -> 0%, floor spread 41 dB -> 29 dB.
+ROOM_TONE_DB = -62.0
+ROOM_TONE = "anoisesrc=c=pink:r=48000:a=1,highpass=f=90,lowpass=f=5500,volume={}dB".format(ROOM_TONE_DB)
 
 TARGET_LUFS = PODCAST_LUFS   # what the per-speaker balance aims each voice at
 
@@ -1274,9 +1299,10 @@ def main():
 
         pre = ";".join(leg(i) for i in srcs)
         if len(srcs) == 2:
-            mix_graph = pre + ";[g0][g1]amix=inputs=2:duration=longest:normalize=0[m]"
+            mix_graph = pre + ";[g0][g1]amix=inputs=2:duration=longest:normalize=0[m0]"
         else:
-            mix_graph = pre + ";[g{}]anull[m]".format(srcs[0])
+            mix_graph = pre + ";[g{}]anull[m0]".format(srcs[0])
+        mix_graph += ";{}[bed];[m0][bed]amix=inputs=2:duration=first:normalize=0[m]".format(ROOM_TONE)
 
         # Render the mix losslessly first, so it can be measured and then
         # mastered twice without stacking two lossy encodes on top of it.

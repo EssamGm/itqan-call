@@ -112,14 +112,16 @@ transmitted. What works: move both voices toward a shared target
 about ±0.5 LU of target; a check written as "−1.0 dBTP exactly" fails every
 time and trains you to ignore it.
 
-**A revised voice chain is tested and not yet shipped:** de-esser *after*
-compression (before it, the compressor re-amplifies what was removed),
-attack 6 → 15 ms so consonant onsets survive, −2 dB at 250 Hz, +2.5 dB at
-3.2 kHz, and a pink-noise room-tone bed at −62 dBFS (90 Hz–5.5 kHz) to fill
-the WebRTC vacuum. Measured on a real call: +3.5 dB consonant energy, digital
-silence 16% → 0%. Essam has the A/B (`mic-test/A_current.m4a`,
-`B_revised.m4a`) and has not chosen. `VOICE_CLEANUP` in `bubble_render.py`
-is still the old chain.
+**The voice chain is in broadcast order, with a room-tone bed.** De-esser
+*after* compression (before it, the compressor re-amplifies what was
+removed), attack 6 → 15 ms so consonant onsets survive, −2 dB at 250 Hz,
++2.5 dB at 3.2 kHz, no gate (measured at 0.0–0.3 dB of effect; the vacuum was
+never its doing), and pink noise band-limited 90 Hz–5.5 kHz at −62 dBFS under
+the mix so a pause sounds like a room rather than the line dropping. Measured
+on a real call: +3.5 dB consonant energy, digital silence 16% → 0%, floor
+spread 41 → 29 dB. Shipped on Essam's standing instruction to own audio
+quality; the A/B is at `C:\Itqaninal\mic-test\` if it ever needs
+revisiting.
 
 **The Rode microphone is worth using.** +13.5 dB SNR, +8.7 dB consonant energy
 over the phone, and the advantage *grows* through Opus at lower bitrates
