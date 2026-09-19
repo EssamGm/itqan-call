@@ -80,7 +80,17 @@ export class DailyProvider {
 
   async join(handlers = {}) {
     if (!this.session) throw new Error("createSession must run before join");
-    const { onRemoteAudio, onJoined, onPeerLeft, onError, onAutoEnd } = handlers;
+    const { onRemoteAudio, onJoined, onPeerJoined, onPeerLeft, onError, onAutoEnd } = handlers;
+
+    // Joining the room is not the same as the other person answering. The
+    // trainee arrives first and waits; the call only starts when the coach
+    // shows up. Fired once, and also on join if the peer is already there.
+    let peerSeen = false;
+    const notePeer = (p) => {
+      if (!p || p.local || peerSeen) return;
+      peerSeen = true;
+      onPeerJoined && onPeerJoined(p.user_name || "");
+    };
 
     this.call = window.DailyIframe.createCallObject({
       subscribeToTracksAutomatically: true,
@@ -98,8 +108,12 @@ export class DailyProvider {
     this.call
       .on("track-started", emitAudio)
       .on("participant-updated", emitAudio)
-      .on("participant-joined", emitAudio)
-      .on("joined-meeting", () => onJoined && onJoined())
+      .on("participant-joined", (ev) => { notePeer(ev && ev.participant); emitAudio(ev); })
+      .on("joined-meeting", () => {
+        onJoined && onJoined();
+        const others = Object.values(this.call.participants() || {}).filter((p) => !p.local);
+        if (others.length) notePeer(others[0]);
+      })
       .on("participant-left", () => onPeerLeft && onPeerLeft())
       .on("error", (e) =>
         onError && onError(e && e.errorMsg ? e.errorMsg : "call error"));

@@ -48,7 +48,12 @@ function startTimer() {
 function stopTimer() {
   if (timerHandle) clearInterval(timerHandle);
   timerHandle = null;
-  return startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+  // Zero if the call never connected - hanging up while it is still ringing
+  // must not report the previous call's length.
+  const seconds = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+  startedAt = 0;
+  $("timer").classList.remove("ringing");
+  return seconds;
 }
 
 /* ------------------------------------------------------------- name entry */
@@ -98,9 +103,17 @@ $("consent-ok").addEventListener("click", async () => {
         el.play().catch(() => {});
       },
       onJoined: () => {
+        // In the room, but the coach has not picked up yet. Say so - the
+        // old screen said the call had started, and trainees sat there
+        // wondering why they could not hear anything.
         show("screen-call");
-        startTimer();
+        $("timer").textContent = "يرن عند عصام…";
+        $("timer").classList.add("ringing");
         keepAwake();
+      },
+      onPeerJoined: () => {
+        $("timer").classList.remove("ringing");
+        startTimer();
       },
       onPeerLeft: () => endCall(),
       // The call ended itself: peer gone, never answered, or our own

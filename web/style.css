@@ -247,3 +247,17 @@ button.ghost {
   font-size: 14px;
   padding: 11px 22px;
 }
+
+/* Waiting for the coach to pick up. */
+.timer.ringing {
+  font-variant-numeric: normal;
+  letter-spacing: 0;
+  animation: ring-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ring-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timer.ringing { animation: none; opacity: 0.8; }
+}
