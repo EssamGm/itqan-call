@@ -120,7 +120,7 @@ never its doing), and pink noise band-limited 90 Hz–5.5 kHz at −62 dBFS unde
 the mix so a pause sounds like a room rather than the line dropping. Measured
 on a real call: +3.5 dB consonant energy, digital silence 16% → 0%, floor
 spread 41 → 29 dB. Shipped on Essam's standing instruction to own audio
-quality; the A/B is at `C:\Itqaninal\mic-test\` if it ever needs
+quality; the A/B is at `C:\Itqan\final\mic-test\` if it ever needs
 revisiting.
 
 **The Rode microphone is worth using.** +13.5 dB SNR, +8.7 dB consonant energy
