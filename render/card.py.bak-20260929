@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""
+Full-frame visual aids for an إتقان video, in the same brand as the thumbnail.
+
+These are the cards that go over Essam's voice when an idea needs showing rather
+than only saying: one word held on screen, two things set against each other, or
+a short numbered list. 1920x1080, so they drop straight onto a video timeline.
+
+Everything comes from `brand.py` - the same navy ground, the same gold, the same
+Cairo Black and IBM Plex Arabic, the same glow. A card and the thumbnail have to
+look like they came from one place, because in the finished video they sit
+seconds apart.
+
+    python3 card.py word  --text "التكرار" --sub "حتى تثبت الكلمة" --out w.png
+    python3 card.py two   --left "تعليم" --left-sub "تعرف القاعدة" \
+                          --right "تدريب" --right-sub "تستخدمها" --out t.png
+    python3 card.py list  --title "ثلاثة مبادئ" \
+                          --item "التكرار" --item "السياق" --item "طريقة تناسبك" --out l.png
+"""
+
+import argparse
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import brand as B  # noqa: E402
+from bubble_render import SURFACE, GOLD  # noqa: E402
+
+W, H = 1920, 1080
+MARGIN = 150
+RULE = 6
+
+# The transcript panel, taken from the podcast renderer: captions.py draws an
+# 880x156 rounded panel and bubble_render.py lays it at y=700 on a 1080-tall
+# frame. The same panel sits on this video, so NOTHING a card draws may enter
+# that band - a card that overlaps it buries the transcript, which is the one
+# thing the transcript cannot survive.
+# 16:9 sits the transcript lower than the podcast's square frame did - there is
+# more height to give away below the content, and the extra room goes to the
+# illustration rather than to empty floor.
+CAPTION_TOP, CAPTION_W, CAPTION_H = 838, 880, 156
+SAFE_BOTTOM = CAPTION_TOP - 40        # every card lays itself out inside 0..this
+
+
+def draw_caption_guide(img):
+    """Outline where the transcript will sit. A check, never shipped."""
+    from PIL import Image, ImageDraw
+    lay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    x0 = (W - CAPTION_W) // 2
+    d.rounded_rectangle([x0, CAPTION_TOP, x0 + CAPTION_W, CAPTION_TOP + CAPTION_H],
+                        radius=18, fill=(255, 255, 255, 46), outline=(255, 255, 255, 150),
+                        width=2)
+    d.line((0, SAFE_BOTTOM, W, SAFE_BOTTOM), fill=(255, 90, 90, 190), width=2)
+    img.alpha_composite(lay)
+
+
+def frame(glow=True):
+    from PIL import Image
+    img = Image.new("RGBA", (W, H), B.rgb(SURFACE) + (255,))
+    if not glow:
+        return img
+    # The same halo the thumbnail puts behind his face, centred and wider, so a
+    # card without a photo still has the channel's light in it rather than
+    # reading as a flat slide.
+    g = B.bloom(GOLD, 260, 210)
+    img.alpha_composite(g, (W // 2 - g.width // 2, SAFE_BOTTOM // 2 - g.height // 2))
+    return img
+
+
+def scale(layer, k):
+    from PIL import Image
+    return layer.resize((max(1, int(layer.width * k)), max(1, int(layer.height * k))),
+                        Image.LANCZOS)
+
+
+def fit_block(layers, box_w, box_h, lead_frac=0.0):
+    """
+    One scale factor for a whole set of lines, honouring BOTH the width and the
+    height of the box.
+
+    Scaling to width alone is the trap: `text_layer` returns ink several hundred
+    pixels tall at these point sizes, so three lines that fit the width happily
+    run off the bottom of the frame. And the factor has to be shared, or lines
+    with a tall ل or a descending ي come out at different type sizes.
+    """
+    kw = box_w / max(l.width for l in layers)
+    tall = sum(l.height for l in layers)
+    if lead_frac and len(layers) > 1:
+        tall += lead_frac * (tall / len(layers)) * (len(layers) - 1)
+    kh = box_h / tall
+    return min(kw, kh)
+
+
+def gold_rule(img, cx, y, w, h=RULE):
+    from PIL import ImageDraw
+    ImageDraw.Draw(img).rectangle((cx - w // 2, y, cx + w // 2, y + h - 1),
+                                  fill=B.rgb(GOLD) + (255,))
+
+
+def down_arrow(img, cx, y0, y1, width=10, head=48):
+    """
+    A straight gold arrow pointing down, drawn the way the thumbnail's arrows
+    are: the shaft stops at the head's base so the point stays a point.
+    Rendered on a small supersampled layer, not a full-frame one - a 3x layer
+    the size of the frame is 75 MB and this VM has 3 GB.
+    """
+    from PIL import Image, ImageDraw
+    s = 3
+    wing = int(head * 0.58)
+    lw, lh = (wing * 2 + width) * s, (y1 - y0) * s
+    lay = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    gold = B.rgb(GOLD) + (255,)
+    X = lw // 2
+    base = lh - head * s
+    d.line((X, 0, X, int(base + head * 0.33 * s)), fill=gold, width=width * s)
+    d.polygon([(X, lh - 1), (X - wing * s, base), (X + wing * s, base)], fill=gold)
+    lay = lay.resize((lw // s, lh // s), Image.LANCZOS)
+    img.alpha_composite(lay, (cx - lay.width // 2, y0))
+
+
+def card_word(a, img, tmp):
+    """One phrase, held. The simplest aid and usually the right one."""
+    t = B.text_layer(a.text, B.DISPLAY, 300, "#FFFFFF", tmp, "w")
+    t = scale(t, min((W - 2 * MARGIN) / t.width, 300 / t.height))
+    sub = None
+    if a.sub:
+        sub = B.text_layer(a.sub, B.NAME, 150, B.MUTED, tmp, "ws")
+        sub = scale(sub, min((W - 2 * MARGIN) / sub.width, 110 / sub.height))
+    gap, rule_gap = 54, 46
+    total = t.height + (rule_gap + RULE + gap + sub.height if sub else 0)
+    y = (SAFE_BOTTOM - total) // 2
+    img.alpha_composite(t, ((W - t.width) // 2, y))
+    if sub:
+        ry = y + t.height + rule_gap
+        gold_rule(img, W // 2, ry, min(t.width, 420))
+        img.alpha_composite(sub, ((W - sub.width) // 2, ry + RULE + gap))
+
+
+def card_two(a, img, tmp):
+    """
+    Two things set against each other - the shape his whole pitch uses.
+
+    Read right to left: `--left` is the FIRST column a reader meets, on the
+    right of the frame. The gold rule sits under the second one, the way the
+    pitch block underlines تدريب.
+    """
+    from PIL import ImageDraw
+    colw = (W - 2 * MARGIN - 160) // 2
+    cx_first = MARGIN + 160 + colw + colw // 2      # right-hand column
+    cx_second = MARGIN + colw // 2                  # left-hand column
+
+    heads = [B.text_layer(t, B.DISPLAY, 260, "#FFFFFF", tmp, "h%d" % i)
+             for i, t in enumerate((a.left, a.right))]
+    kh = min(colw / max(l.width for l in heads), 300 / max(l.height for l in heads))
+    subs = [B.text_layer(t, B.NAME, 130, B.MUTED, tmp, "s%d" % i) if t else None
+            for i, t in enumerate((a.left_sub, a.right_sub))]
+    real = [x for x in subs if x]
+    ks = min(colw / max(x.width for x in real), 100 / max(x.height for x in real)) if real else 1.0
+
+    for cx, hl, sl, mark in ((cx_first, heads[0], subs[0], False),
+                             (cx_second, heads[1], subs[1], True)):
+        ht = scale(hl, kh)
+        st = scale(sl, ks) if sl else None
+        total = ht.height + (40 + RULE + 44 + st.height if st else 0)
+        y = (SAFE_BOTTOM - total) // 2
+        img.alpha_composite(ht, (cx - ht.width // 2, y))
+        if st:
+            ry = y + ht.height + 40
+            if mark:
+                gold_rule(img, cx, ry, min(ht.width, 320))
+            img.alpha_composite(st, (cx - st.width // 2, ry + RULE + 44))
+
+    # the divider between them
+    ImageDraw.Draw(img).rectangle((W // 2 - 2, SAFE_BOTTOM // 2 - 190,
+                                   W // 2 + 1, SAFE_BOTTOM // 2 + 190),
+                                  fill=B.rgb(B.DISC_FILL) + (255,))
+
+
+def card_list(a, img, tmp):
+    """A short numbered list. Three or four items; more than that is a slide."""
+    from PIL import Image, ImageDraw
+    items = a.items[:5]
+    title = None
+    if a.title:
+        title = B.text_layer(a.title, B.DISPLAY, 200, "#FFFFFF", tmp, "lt")
+        title = scale(title, min((W - 2 * MARGIN) / title.width, 190 / title.height))
+
+    head_h = (title.height + 44 + RULE + 70) if title else 0
+    box_h = SAFE_BOTTOM - 2 * 70 - head_h
+    layers = [B.text_layer(t, B.NAME, 170, "#FFFFFF", tmp, "li%d" % i)
+              for i, t in enumerate(items)]
+    # room for the numeral and its ring on the right of every line
+    k = fit_block(layers, W - 2 * MARGIN - 180, box_h, lead_frac=0.5)
+    layers = [scale(l, k) for l in layers]
+    lead = int(0.5 * (sum(l.height for l in layers) / len(layers)))
+
+    block = sum(l.height for l in layers) + lead * (len(layers) - 1)
+    y = (SAFE_BOTTOM - (head_h + block)) // 2
+    if title:
+        img.alpha_composite(title, ((W - title.width) // 2, y))
+        gold_rule(img, W // 2, y + title.height + 44, min(title.width, 420))
+        y += head_h
+
+    right = W - MARGIN
+    d = ImageDraw.Draw(img)
+    for i, l in enumerate(layers):
+        r = max(30, l.height // 2)
+        cy = y + l.height // 2
+        d.ellipse((right - 2 * r, cy - r, right, cy + r),
+                  outline=B.rgb(GOLD) + (255,), width=4)
+        n = B.fit_height(B.text_layer(str(i + 1), B.DISPLAY, 150, GOLD, tmp, "n%d" % i),
+                         int(r * 1.1))
+        img.alpha_composite(n, (right - r - n.width // 2, cy - n.height // 2))
+        img.alpha_composite(l, (right - 2 * r - 40 - l.width, y))
+        y += l.height + lead
+
+
+def card_grow(a, img, tmp):
+    """
+    One thing that expands set against one thing that goes round in a circle.
+
+    The argument is carried by the picture, not the words: ripples spreading
+    outward on the right, a closed ring on the left. That is what lets the text
+    stay short - and it has to stay short, because a viewer who starts reading
+    has stopped listening.
+    """
+    from PIL import ImageDraw
+    import math
+    d = ImageDraw.Draw(img)
+    gold = B.rgb(GOLD) + (255,)
+    white = (255, 255, 255, 255)
+    muted = B.rgb(B.MUTED) + (255,)
+
+    colw = (W - 2 * MARGIN - 160) // 2
+    cx_first = MARGIN + 160 + colw + colw // 2       # right-hand column, read first
+    cx_second = MARGIN + colw // 2
+    vy = SAFE_BOTTOM // 2 + 40                       # centre of the two drawings
+
+    # labels and captions, one scale factor each so the two sides match
+    heads = [B.text_layer(t, B.DISPLAY, 260, "#FFFFFF", tmp, "gh%d" % i)
+             for i, t in enumerate((a.expand, a.loop))]
+    kh = min(colw / max(l.width for l in heads), 118 / max(l.height for l in heads))
+    subs = [B.text_layer(t, B.NAME, 130, B.MUTED, tmp, "gs%d" % i)
+            for i, t in enumerate((a.expand_sub, a.loop_sub))]
+    ks = min(colw / max(l.width for l in subs), 66 / max(l.height for l in subs))
+
+    for cx, hl, sl in ((cx_first, heads[0], subs[0]), (cx_second, heads[1], subs[1])):
+        h = scale(hl, kh); sb = scale(sl, ks)
+        img.alpha_composite(h, (cx - h.width // 2, vy - 250 - h.height))
+        img.alpha_composite(sb, (cx - sb.width // 2, vy + 232))
+
+    # RIGHT: ripples going outward. Centre white - what he already has - and the
+    # rings gold, because the new words are what arrives from outside.
+    for ring, (r, n) in enumerate(((0, 1), (62, 6), (124, 11), (186, 16))):
+        if r:
+            d.ellipse((cx_first - r, vy - r, cx_first + r, vy + r),
+                      outline=gold[:3] + (70 + ring * 12,), width=2)
+        for i in range(n):
+            ang = (2 * math.pi * i / n) + (ring * 0.4)
+            px, py = cx_first + r * math.cos(ang), vy + r * math.sin(ang)
+            rr = 13 if ring == 0 else 8
+            d.ellipse((px - rr, py - rr, px + rr, py + rr),
+                      fill=white if ring == 0 else gold)
+
+    # LEFT: one closed ring, the same few dots going round for ever.
+    R = 150
+    d.ellipse((cx_second - R, vy - R, cx_second + R, vy + R), outline=muted, width=3)
+    for i in range(5):
+        ang = 2 * math.pi * i / 5 - math.pi / 2
+        px, py = cx_second + R * math.cos(ang), vy + R * math.sin(ang)
+        d.ellipse((px - 13, py - 13, px + 13, py + 13), fill=white)
+    # the arrowhead that says "round again", on the ring itself
+    ang = -math.pi / 2 + 0.42
+    px, py = cx_second + R * math.cos(ang), vy + R * math.sin(ang)
+    t = (px - 26 * math.sin(ang), py + 26 * math.cos(ang))
+    d.polygon([t,
+               (px + 20 * math.cos(ang) + 11 * math.sin(ang),
+                py + 20 * math.sin(ang) - 11 * math.cos(ang)),
+               (px - 20 * math.cos(ang) + 11 * math.sin(ang),
+                py - 20 * math.sin(ang) - 11 * math.cos(ang))], fill=gold)
+
+    d.rectangle((W // 2 - 1, vy - 250, W // 2, vy + 250), fill=B.rgb(B.DISC_FILL) + (255,))
+
+    if a.conclusion:
+        c = B.text_layer(a.conclusion, B.DISPLAY, 200, "#FFFFFF", tmp, "gc")
+        c = scale(c, min((W - 2 * MARGIN) / c.width, 96 / c.height))
+        gold_rule(img, W // 2, SAFE_BOTTOM - 130, 360)
+        img.alpha_composite(c, ((W - c.width) // 2, SAFE_BOTTOM - 130 + RULE + 40))
+
+
+def card_decode(a, img, tmp):
+    """
+    Two sides of one claim: a word, an arrow, and the sentence the word means.
+
+    A straight gold rule divides them - not a glow. A soft centre reads as
+    decoration; a hard line reads as "these are two different things", which is
+    the whole point of the card.
+
+    `--rows` brings back the illustration underneath: listening as a code being
+    broken, against speaking as the same word repeated.
+
+    The blocks are speech he cannot parse yet; the legible words are the ones
+    that have resolved. Later rows carry more of them than earlier rows, so the
+    picture says "this is getting better with time" without a word of text.
+
+    The solved tokens are English on purpose. English is the code he is actually
+    decoding, and seeing real English words emerge out of the blocks is the
+    whole argument in one glance.
+    """
+    from PIL import ImageDraw
+    import random
+    d = ImageDraw.Draw(img)
+    gold = B.rgb(GOLD) + (255,)
+
+    colw = (W - 2 * MARGIN - 160) // 2
+    right_edge = MARGIN + 160 + 2 * colw          # right-hand column, read first
+    left_edge = MARGIN + colw
+    vy = 470
+
+    heads = [scale(B.text_layer(t, B.DISPLAY, 260, "#FFFFFF", tmp, "dh%d" % i), 1.0)
+             for i, t in enumerate((a.listen, a.speak))]
+    kh = min(colw / max(l.width for l in heads), 118 / max(l.height for l in heads))
+    heads = [scale(l, kh) for l in heads]
+    subs = [B.text_layer(t, B.NAME, 130, B.MUTED, tmp, "ds%d" % i)
+            for i, t in enumerate((a.listen_sub, a.speak_sub))]
+    ks = min(colw / max(l.width for l in subs), 76 / max(l.height for l in subs))
+    subs = [scale(l, ks) for l in subs]
+
+    # Label, arrow, then the sentence the label means, then the evidence under
+    # it. The arrow is what makes the caption read as an explanation of the word
+    # above rather than a note floating beside a drawing.
+    head_h = max(l.height for l in heads)
+    sub_h = max(l.height for l in subs)
+    # Long arrow, generous gaps. A short arrow packs the three elements into the
+    # middle third and leaves the frame looking like a crop of a bigger card;
+    # the arrow is what has to stretch, because it is the only element whose
+    # length carries no meaning.
+    if a.rows:
+        gap, arrow_len, top = 18, 84, 96
+    else:
+        gap = 52
+        top = 90
+        arrow_len = SAFE_BOTTOM - 2 * top - head_h - 2 * gap - sub_h
+    block = head_h + gap + arrow_len + gap + sub_h
+    cap_y = top + head_h + gap + arrow_len + gap
+    vis_top = cap_y + sub_h + 62
+
+    for cx, h, sb in ((right_edge - colw // 2, heads[0], subs[0]),
+                      (left_edge - colw // 2, heads[1], subs[1])):
+        # Top-aligned, not bottom-aligned. Both words start on an alef, so their
+        # tall letters sit at the same height and the two read as level; bottom
+        # alignment instead lines up the descender of ع with the baseline of
+        # ث and visibly lifts one word above the other.
+        img.alpha_composite(h, (cx - h.width // 2, top))
+        down_arrow(img, cx, top + head_h + gap, cap_y - gap,
+                   width=10 if a.rows else 12, head=48 if a.rows else 58)
+        img.alpha_composite(sb, (cx - sb.width // 2, cap_y))
+
+    if not a.rows:
+        # Centred on the content block, and clear of the frame edge on both
+        # ends. A rule that bleeds off the top but stops short at the bottom
+        # reads as a tilt even though every element is square to the frame.
+        d.rectangle((W // 2 - 2, top - 56, W // 2 + 1, cap_y + sub_h + 56),
+                    fill=B.rgb(GOLD) + (255,))
+        return
+
+    # ---- listening: rows of unreadable blocks, a few of them resolved --------
+    rng = random.Random(7)
+    ROW, BH, GAP = 62, 24, 20
+    solved_per_row = [0, 1, 1, 2, 2]
+    words = a.solved or ["because", "already", "I mean", "even if", "actually", "at least"]
+    wi = 0
+    y = vis_top
+    for r, nsolved in enumerate(solved_per_row):
+        x = right_edge
+        slots = 5
+        solved_at = set(rng.sample(range(slots), nsolved)) if nsolved else set()
+        for sidx in range(slots):
+            if x < right_edge - colw:
+                break
+            if sidx in solved_at:
+                w = B.text_layer(words[wi % len(words)], B.NAME, 130, "#FFFFFF", tmp,
+                                 "dw%d_%d" % (r, sidx))
+                wi += 1
+                w = scale(w, min(1.0, 40 / w.height))
+                if x - w.width < right_edge - colw:
+                    break
+                img.alpha_composite(w, (x - w.width, y + BH // 2 - w.height // 2))
+                d.rectangle((x - w.width, y + BH + 12, x, y + BH + 15), fill=gold)
+                x -= w.width + GAP
+            else:
+                bw = rng.randint(58, 132)
+                if x - bw < right_edge - colw:
+                    break
+                # dim, soft, deliberately unreadable
+                d.rounded_rectangle((x - bw, y, x, y + BH), radius=BH // 2,
+                                    fill=B.rgb(B.DISC_FILL) + (255,))
+                x -= bw + GAP
+        y += ROW
+
+    # ---- speaking: the same word, again, and again ---------------------------
+    w0 = B.text_layer(a.word or "good", B.NAME, 130, "#FFFFFF", tmp, "drep")
+    w0 = scale(w0, min(1.0, 44 / w0.height))
+    y = vis_top
+    cx = left_edge - colw // 2
+    for i in range(5):
+        img.alpha_composite(w0, (cx - w0.width // 2, y + BH // 2 - w0.height // 2))
+        y += ROW
+
+    d.rectangle((W // 2 - 2, top - 40, W // 2 + 1, vis_top + 5 * ROW - 20),
+                fill=B.rgb(GOLD) + (255,))
+
+    if a.conclusion:
+        c = B.text_layer(a.conclusion, B.DISPLAY, 200, "#FFFFFF", tmp, "dc")
+        c = scale(c, min((W - 2 * MARGIN) / c.width, 96 / c.height))
+        gold_rule(img, W // 2, SAFE_BOTTOM - 130, 360)
+        img.alpha_composite(c, ((W - c.width) // 2, SAFE_BOTTOM - 130 + RULE + 40))
+
+
+def card_cycle(a, img, tmp):
+    """
+    A closed loop with the steps on it - a real circle, not a numbered list.
+
+    Runs counter-clockwise from the top, which is the direction Arabic reads,
+    so the eye leaves each step towards the next instead of doubling back. The
+    arrowheads are what say "this never stops"; without them four words on a
+    ring are just four words.
+    """
+    from PIL import Image, ImageDraw
+    import math
+    items = a.items[:4]
+    if len(items) < 3:
+        sys.exit("card cycle: needs 3 or 4 items")
+
+    CX, CY, R = W // 2, 400, 212
+    S = 3
+    pad = 80
+    box = (CX - R - pad, CY - R - pad, CX + R + pad, CY + R + pad)
+    lay = Image.new("RGBA", ((box[2] - box[0]) * S, (box[3] - box[1]) * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    gold = B.rgb(GOLD) + (255,)
+    lx, ly = box[0], box[1]
+
+    def pt(deg, r=R):
+        t = math.radians(deg)
+        return ((CX - lx + r * math.cos(t)) * S, (CY - ly + r * math.sin(t)) * S)
+
+    # PIL angles: 0 at 3 o'clock, increasing clockwise. Counter-clockwise motion
+    # is therefore DECREASING angle, and the arrowheads follow that.
+    n = len(items)
+    step = 360 // n
+    nodes = [270 - i * step for i in range(n)]        # top, then leftwards
+    gapdeg = 26
+    ring = (( -R) * S + (CX - lx) * S, (-R) * S + (CY - ly) * S,
+            (R) * S + (CX - lx) * S, (R) * S + (CY - ly) * S)
+    for i in range(n):
+        a0 = nodes[i] - step + gapdeg
+        a1 = nodes[i] - gapdeg
+        d.arc(ring, a0, a1, fill=gold, width=7 * S)
+        # arrowhead at the arriving end, tangent to the circle
+        th = math.radians(a0)
+        px, py = pt(a0)
+        tx, ty = math.sin(th), -math.cos(th)
+        hl, wg = 30 * S, 17 * S
+        tip = (px + tx * hl * 0.5, py + ty * hl * 0.5)
+        base = (px - tx * hl * 0.5, py - ty * hl * 0.5)
+        d.polygon([tip, (base[0] - ty * wg, base[1] + tx * wg),
+                   (base[0] + ty * wg, base[1] - tx * wg)], fill=gold)
+    for deg in nodes:
+        px, py = pt(deg)
+        r = 13 * S
+        d.ellipse((px - r, py - r, px + r, py + r), fill=B.rgb(SURFACE) + (255,),
+                  outline=gold, width=6 * S)
+    lay = lay.resize((box[2] - box[0], box[3] - box[1]), Image.LANCZOS)
+    img.alpha_composite(lay, (box[0], box[1]))
+
+    # labels outside the ring, each on the far side of its own node
+    layers = [B.text_layer(t, B.NAME, 150, "#FFFFFF", tmp, "cy%d" % i)
+              for i, t in enumerate(items)]
+    k = min(1.0, 420 / max(l.width for l in layers), 62 / max(l.height for l in layers))
+    layers = [scale(l, k) for l in layers]
+    off = 52
+    for deg, l in zip(nodes, layers):
+        t = math.radians(deg)
+        px = CX + (R + off) * math.cos(t)
+        py = CY + (R + off) * math.sin(t)
+        x = px - l.width / 2
+        y = py - l.height / 2
+        if abs(math.cos(t)) > 0.5:                     # a side node: push clear
+            x = px - l.width if math.cos(t) < 0 else px
+        else:                                          # top or bottom node
+            y = py - l.height if math.sin(t) < 0 else py
+        img.alpha_composite(l, (int(max(MARGIN, min(W - MARGIN - l.width, x))), int(y)))
+
+    if a.title:
+        c = B.text_layer(a.title, B.DISPLAY, 200, GOLD, tmp, "cyt")
+        c = scale(c, min(300 / c.width, 74 / c.height))
+        img.alpha_composite(c, (CX - c.width // 2, CY - c.height // 2))
+
+
+
+def card_table(a, img, tmp):
+    """
+    Two columns, a few rows: a name on the right, what it is worth on the left.
+
+    `card_list` numbers its items, and a number is a ranking. The three
+    learners must NOT read as a ranking - the whole argument of the video is
+    that the slow one has not failed - so a table with no numerals is the right
+    shape for them, and for any other "this, then that" pairing.
+
+    Rows are given as `--item "name|value"`. A row with no `|` fills the whole
+    width as a single white line.
+    """
+    from PIL import ImageDraw
+    rows = [x.split("|", 1) for x in a.items[:5]]
+    # Rows that are MEASURED but not drawn. A set of cards that cut to each
+    # other - the same table filling up - must be shaped at ONE size, or the
+    # cut reads as a zoom. Give every card in the set the same --ghost rows
+    # (the longest version) and they all come out identical in size.
+    ghosts = [x.split("|", 1) for x in a.ghost[:5]]
+    measure = rows + ghosts          # widths and heights are measured over both
+    n_rows = max(len(rows), len(ghosts))  # but the block is only as tall as the set gets
+    title = None
+    if a.title:
+        title = B.text_layer(a.title, B.DISPLAY, 200, "#FFFFFF", tmp, "tt")
+        title = scale(title, min((W - 2 * MARGIN) / title.width, 170 / title.height))
+    head_h = (title.height + 44 + RULE + 76) if title else 0
+
+    box_h = SAFE_BOTTOM - 2 * 80 - head_h
+    def lay(rs):
+        n = [B.text_layer(r[0].strip(), B.DISPLAY, 190, "#FFFFFF", tmp, "tn%d" % i)
+             for i, r in enumerate(rs)]
+        v = [B.text_layer(r[1].strip(), B.NAME, 160, GOLD, tmp, "tv%d" % i) if len(r) > 1 else None
+             for i, r in enumerate(rs)]
+        return n, v
+
+    mnames, mvals = lay(measure)
+    names, vals = (mnames[:len(rows)], mvals[:len(rows)]) if measure == rows else lay(rows)
+
+    # one point size for the names, one for the values: never normalise per row,
+    # a row with a tall ل would otherwise come out at a different size
+    colw = (W - 2 * MARGIN - 120) // 2
+    kn = min(colw / max(l.width for l in mnames), 170 / max(l.height for l in mnames))
+    mreal = [v for v in mvals if v]
+    kv = min(colw / max(v.width for v in mreal), 130 / max(v.height for v in mreal)) if mreal else 1.0
+    names = [scale(l, kn) for l in names]
+    vals = [scale(v, kv) if v else None for v in vals]
+    real = [v for v in vals if v]
+
+    rowh = max(max(scale(l, kn).height for l in mnames),
+               max(scale(v, kv).height for v in mreal) if mreal else 0)
+    lead = int(rowh * 0.62)
+    block = rowh * n_rows + lead * (n_rows - 1)
+    k2 = min(1.0, box_h / block)
+    if k2 < 1.0:
+        names = [scale(l, k2) for l in names]
+        vals = [scale(v, k2) if v else None for v in vals]
+        rowh, lead = int(rowh * k2), int(lead * k2)
+    # The TYPE SIZE comes from the fullest version of the table (n_rows, via the
+    # ghost rows) so every card in a set is shaped identically - that is the one
+    # thing that must not change across a cut. The BLOCK is centred on the rows
+    # actually drawn, so a two-row card is not left top-heavy with dead space
+    # under it; the table simply grows as rows arrive.
+    block = rowh * len(rows) + lead * (len(rows) - 1)
+
+    y = (SAFE_BOTTOM - (head_h + block)) // 2
+    if title:
+        img.alpha_composite(title, ((W - title.width) // 2, y))
+        gold_rule(img, W // 2, y + title.height + 44, min(title.width, 460))
+        y += head_h
+
+    right, left = W - MARGIN, MARGIN
+    d = ImageDraw.Draw(img)
+    for i, (nl, vl) in enumerate(zip(names, vals)):
+        cy = y + rowh // 2
+        if vl is None:
+            img.alpha_composite(nl, ((W - nl.width) // 2, cy - nl.height // 2))
+        else:
+            img.alpha_composite(nl, (right - nl.width, cy - nl.height // 2))
+            img.alpha_composite(vl, (left, cy - vl.height // 2))
+        if i < len(rows) - 1:
+            ly = y + rowh + lead // 2
+            d.rectangle((left, ly - 1, right, ly + 1), fill=B.rgb(B.DISC_FILL) + (255,))
+        y += rowh + lead
+
+
+KINDS = {"table": card_table, "word": card_word, "two": card_two, "list": card_list, "grow": card_grow, "decode": card_decode, "cycle": card_cycle}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("kind", choices=sorted(KINDS))
+    ap.add_argument("--text", default=""); ap.add_argument("--sub", default="")
+    ap.add_argument("--left", default=""); ap.add_argument("--left-sub", default="", dest="left_sub")
+    ap.add_argument("--right", default=""); ap.add_argument("--right-sub", default="", dest="right_sub")
+    ap.add_argument("--title", default="")
+    ap.add_argument("--expand", default=""); ap.add_argument("--expand-sub", default="", dest="expand_sub")
+    ap.add_argument("--loop", default=""); ap.add_argument("--loop-sub", default="", dest="loop_sub")
+    ap.add_argument("--conclusion", default="")
+    ap.add_argument("--listen", default=""); ap.add_argument("--listen-sub", default="", dest="listen_sub")
+    ap.add_argument("--speak", default=""); ap.add_argument("--speak-sub", default="", dest="speak_sub")
+    ap.add_argument("--word", default=""); ap.add_argument("--solved", action="append", default=[])
+    ap.add_argument("--rows", action="store_true", help="show the code/repetition illustration")
+    ap.add_argument("--guide", action="store_true", help="outline the transcript panel; for checking only")
+    ap.add_argument("--item", action="append", default=[], dest="items")
+    ap.add_argument("--ghost", action="append", default=[],
+                    help="table: a row measured but not drawn, so a set of cards shares one type size")
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    tmp = tempfile.mkdtemp(prefix="itqan-card-")
+    img = frame(glow=a.kind != "decode")
+    KINDS[a.kind](a, img, tmp)
+    if a.guide:
+        draw_caption_guide(img)
+    img.convert("RGB").save(a.out, quality=95)
+    print("wrote {}  ({}x{}, {})".format(a.out, W, H, a.kind))
+
+
+if __name__ == "__main__":
+    main()

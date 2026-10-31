@@ -114,7 +114,17 @@ $("answer-btn").addEventListener("click", async () => {
         }
         warnNotRecording(provider.lastRecordingError);
       },
-      onPeerLeft: () => endCall(),
+      onPeerLeft: () => {
+        // Same as the trainee side: wait, do not end. Ending deletes the room
+        // and the trainee cannot come back - that is what turned one call
+        // into two on 30 October.
+        const note = $("call-note");
+        if (note) note.textContent = "انقطع اتصال المتدرب… ننتظر عودته";
+      },
+      onPeerJoined: () => {
+        const note = $("call-note");
+        if (note) note.textContent = "";
+      },
       onAutoEnd: (reason) => endCall(AUTO_END_TEXT[reason]),
       onError: () => endCall(),
     });

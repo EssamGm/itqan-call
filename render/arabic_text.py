@@ -14,8 +14,10 @@ That keeps brand-correct Cairo 900 with no presentation-forms dependency.
 """
 
 import os
+import re
 
 import uharfbuzz as hb
+from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.ttLib import TTFont
 from reportlab.graphics import renderPM
@@ -39,6 +41,35 @@ def _font_pair(font_path):
     return _CACHE[font_path]
 
 
+# Digits, and the signs that travel with them, are a left-to-right island
+# inside Arabic text. HarfBuzz shapes an RTL run by reversing the whole thing -
+# it does not run the bidi algorithm, that is the caller's job - so "\u0661\u0660\u066a" came out
+# as "\u066a\u0660\u0661". Pre-reversing each numeric run cancels that reversal and the
+# number lands in its correct order. A Latin-script string is detected as LTR
+# and never reaches this path, so words are untouched.
+# HarfBuzz reverses a whole RTL run and does NOT run the bidi algorithm, so any
+# left-to-right island inside Arabic text - a number, a percentage, a Latin word
+# like "car" or "iOS 18" - comes out backwards. Pre-reversing the island cancels
+# that reversal out. Without this, "10%" rendered as "%01" and "car" as "rac".
+#
+# Spaces are part of a run only BETWEEN two LTR tokens, so a multi-word phrase
+# ("New York") is reversed as one island and keeps its word order, while the
+# spaces separating the island from the surrounding Arabic are left alone.
+# Latin letters INCLUDING the accented ones. "rês" was split into "r", "ê", "s"
+# because U+00EA fell outside the class: the two ASCII runs each reversed on
+# their own and the word shipped as "ser" with the e in the wrong place. Any
+# accented Latin in a caption would have done the same. The added range covers
+# Latin-1 Supplement and Latin Extended-A/B.
+_LTR_TOKEN = (r"[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F"
+              r"0-9\u0660-\u0669\u066b\u066c\u066a%.,:;!?/@&'\u2212_-]+")
+_LTR_RUN = re.compile(r"%s(?:[ ]+%s)*" % (_LTR_TOKEN, _LTR_TOKEN))
+
+
+def _fix_numeral_order(text):
+    """Pre-reverse every LTR island so HarfBuzz's RTL reversal restores it."""
+    return _LTR_RUN.sub(lambda m: m.group(0)[::-1], text)
+
+
 def text_to_svg(text, font_path=DEFAULT_FONT, size=100, color="#F2F5F8", pad=0.15):
     """Shape `text` and return a standalone SVG string, sized in px."""
     hb_font, tt, upem = _font_pair(font_path)
@@ -48,13 +79,24 @@ def text_to_svg(text, font_path=DEFAULT_FONT, size=100, color="#F2F5F8", pad=0.1
     buf = hb.Buffer()
     buf.add_str(text)
     buf.guess_segment_properties()   # picks RTL + Arabic script automatically
+    if str(buf.direction).lower().endswith("rtl"):
+        buf = hb.Buffer()
+        buf.add_str(_fix_numeral_order(text))
+        buf.guess_segment_properties()
     hb.shape(hb_font, buf)
 
     scale = size / float(upem)
     paths = []
     x = 0.0
+    ink_top = ink_bottom = 0.0      # px above `size`, px below 0, in font y-up terms
     for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
         name = order[info.codepoint]
+        bp = BoundsPen(glyphset)
+        glyphset[name].draw(bp)
+        if bp.bounds:
+            _, y0, _, y1 = bp.bounds
+            ink_bottom = min(ink_bottom, (y0 + pos.y_offset) * scale)
+            ink_top = max(ink_top, (y1 + pos.y_offset) * scale)
         pen = SVGPathPen(glyphset)
         glyphset[name].draw(pen)
         d = pen.getCommands()
@@ -73,7 +115,15 @@ def text_to_svg(text, font_path=DEFAULT_FONT, size=100, color="#F2F5F8", pad=0.1
     padding = size * pad
     # Generous vertical box: Arabic ascenders and the hamza descender both
     # sit outside the nominal em, and clipping them looks broken.
-    top, bottom = size * 0.42, size * 0.34
+    #
+    # The fixed 0.42/0.34 was not generous enough. A final ي carries its two
+    # dots as a component placed well below the baseline - about -0.47 em in
+    # both Cairo and IBM Plex - so the dots were drawn correctly and then cut
+    # off by the box, and every final ي in every caption and thumbnail came out
+    # looking like ى. So the box starts at those numbers and grows to whatever
+    # the shaped run actually needs. Runs that fitted before are untouched.
+    top = max(size * 0.42, ink_top - size + padding)
+    bottom = max(size * 0.34, -ink_bottom + padding)
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" '
         'viewBox="{:.2f} {:.2f} {:.2f} {:.2f}">'

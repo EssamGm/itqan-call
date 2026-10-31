@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""
+The إتقان thumbnail brand layer.
+
+Everything a viewer recognises as "this channel" lives here: the palette, the
+type, the gold arrow, the ring and bloom around a face, the episode badge, the
+lockup and the pitch block under it, and the geometry of the right-hand column
+those last two share with the headline.
+
+`thumbnail.py` owns only the *subject zone* on the left, which is what tells a
+viewer the format of the episode. Nothing in this file knows what a format is.
+
+The point of the split: change a colour, a font, a margin or the arrow here and
+every format changes with it. A restyle can never drift one format away from
+the others, because there is only one copy of the thing being restyled.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from arabic_text import render_text_png  # noqa: E402
+from bubble_render import SURFACE, GOLD, NAVY_LIGHT, TEXT, logo_path  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FONTS = os.path.join(ROOT, "assets", "fonts")
+
+# --- type -------------------------------------------------------------------
+DISPLAY = os.path.join(FONTS, "Cairo-Black.ttf")              # headline, at ~200px wide
+SUB = os.path.join(FONTS, "Cairo-Bold.ttf")
+NAME = os.path.join(FONTS, "IBMPlexSansArabic-SemiBold.ttf")  # matches the video's bubbles
+
+# --- palette ----------------------------------------------------------------
+DISC_FILL = "#122943"
+MUTED = "#B9C1CC"        # the ad's grey, lifted for a dark ground
+PITCH_INK = "#FFFFFF"    # the pitch is white throughout: it has to be read, not
+                         # merely present. Emphasis on تدريب is size and rule.
+
+# --- frame ------------------------------------------------------------------
+W, H = 1280, 720
+CY = 372                 # every subject disc sits on this line, in every format
+DIAMETER = 330           # the standard disc: a face, or the second party
+RING = 9
+OVERLAP = 96             # how far the front disc covers the one behind it
+
+# The right-hand column. These are constants, not derived from the subject
+# zone, and that is deliberate: the headline, the lockup and the pitch block
+# land on identical pixels in every format. It is what makes three different
+# layouts read as one channel.
+RIGHT_EDGE = 1212
+HEADLINE_LEFT = 777
+HEADLINE_TOP = 58
+TEXT_W = RIGHT_EDGE - HEADLINE_LEFT
+PITCH_BOTTOM = 44        # gap from the pitch block to the frame's bottom edge
+HOST_LABEL_GAP = 30      # from the host disc's left edge to the label
+HOST_LABEL_TOP = 58
+HOST_ARROW_DX = 76       # left of the disc centre: where the arrow leaves the ring
+HOST_ARROW_TIP_GAP = 12  # from the label's box down to the arrowhead's tip
+ARROW_HEAD = 32          # arrowhead length, every arrow on the frame
+
+
+def rgb(hexstr):
+    h = hexstr.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def text_layer(text, font, size, colour, tmp, tag):
+    """Shape text, read it back as a mask, paint the colour through. Cropped to ink."""
+    from PIL import Image
+    p = os.path.join(tmp, "t_{}.png".format(tag))
+    render_text_png(text, p, font_path=font, size=size, color="#FFFFFF", bg=0x000000)
+    with Image.open(p) as raw:
+        alpha = raw.convert("L")
+    alpha = alpha.crop(alpha.getbbox())
+    layer = Image.new("RGBA", alpha.size, rgb(colour) + (255,))
+    layer.putalpha(alpha)
+    return layer
+
+
+def fit_height(layer, h):
+    from PIL import Image
+    return layer.resize((max(1, int(layer.width * h / layer.height)), h), Image.LANCZOS)
+
+
+def circle_mask(d, feather=1.2):
+    from PIL import Image, ImageDraw, ImageFilter
+    s = 4
+    m = Image.new("L", (d * s, d * s), 0)
+    ImageDraw.Draw(m).ellipse((0, 0, d * s - 1, d * s - 1), fill=255)
+    return m.resize((d, d), Image.LANCZOS).filter(ImageFilter.GaussianBlur(feather))
+
+
+def ringed(disc, ring_colour, d=DIAMETER):
+    """A disc with its ring, on a transparent square."""
+    from PIL import Image, ImageDraw
+    outer = d + 2 * RING
+    s = 4
+    ring = Image.new("RGBA", (outer * s, outer * s), (0, 0, 0, 0))
+    ImageDraw.Draw(ring).ellipse((0, 0, outer * s - 1, outer * s - 1),
+                                 fill=rgb(ring_colour) + (255,))
+    ring = ring.resize((outer, outer), Image.LANCZOS)
+    ring.paste(disc, (RING, RING), disc)
+    return ring
+
+
+def photo_disc(path, d=DIAMETER):
+    """The host's face, gold-ringed. The one element present in every format."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+    im = ImageOps.fit(im, (d, d), Image.LANCZOS, centering=(0.5, 0.42))
+    disc = im.convert("RGBA")
+    disc.putalpha(circle_mask(d))
+    return ringed(disc, GOLD, d)
+
+
+def second_disc(layer, d=DIAMETER, ring_colour=NAVY_LIGHT):
+    """
+    The disc that sits *behind* the host: whoever else is in this episode.
+
+    The host's photo covers its left edge by OVERLAP, so the content is centred
+    on the part that stays visible, not on the disc, or its first letters
+    vanish underneath.
+    """
+    from PIL import Image
+    disc = Image.new("RGBA", (d, d), rgb(DISC_FILL) + (255,))
+    disc.putalpha(circle_mask(d))
+    visible_w = d - OVERLAP
+    max_w = int(visible_w * 0.80)
+    if layer.width > max_w:
+        layer = layer.resize((max_w, int(layer.height * max_w / layer.width)), Image.LANCZOS)
+    x = OVERLAP + (visible_w - layer.width) // 2
+    disc.paste(layer, (x, (d - layer.height) // 2), layer)
+    return ringed(disc, ring_colour, d)
+
+
+def bloom(colour, radius, sigma):
+    """The soft halo the video puts behind a speaking bubble."""
+    from PIL import Image, ImageDraw, ImageFilter
+    size = int(radius * 2 + sigma * 6)
+    m = Image.new("L", (size, size), 0)
+    c = size // 2
+    ImageDraw.Draw(m).ellipse((c - radius, c - radius, c + radius, c + radius), fill=255)
+    m = m.filter(ImageFilter.GaussianBlur(sigma))
+    layer = Image.new("RGBA", (size, size), rgb(colour) + (255,))
+    layer.putalpha(m.point(lambda v: int(v * 0.55)))
+    return layer
+
+
+def arrow(p0, p2, ctrl, width=7, head=ARROW_HEAD):
+    """
+    A curved annotation arrow, gold, on a transparent full-frame layer.
+
+    The body stops at the base of the head rather than running to the tip: a
+    thick line has a rounded end, and drawn all the way it pokes through the
+    point of the triangle and blunts it. So the curve is cut `head` back from
+    the tip along its own tangent, and the head is drawn from that base.
+    """
+    from PIL import Image, ImageDraw
+    import math
+    s = 4
+    im = Image.new("RGBA", (W * s, H * s), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(im)
+    gold = rgb(GOLD) + (255,)
+    pts = []
+    for i in range(61):
+        t = i / 60
+        x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * ctrl[0] + t ** 2 * p2[0]
+        y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * ctrl[1] + t ** 2 * p2[1]
+        pts.append((x * s, y * s))
+    tip = pts[-1]
+    (x1, y1) = pts[-4]
+    ang = math.atan2(tip[1] - y1, tip[0] - x1)
+    hl = head * s
+    base = (tip[0] - hl * math.cos(ang), tip[1] - hl * math.sin(ang))
+    # The body runs a third of the way into the head, so the head's fill covers
+    # the join - a bending curve meets a straight head at a slight angle, and
+    # left exposed that reads as a kink.
+    inset = (tip[0] - hl * 0.66 * math.cos(ang), tip[1] - hl * 0.66 * math.sin(ang))
+    body = [q for q in pts if math.hypot(q[0] - tip[0], q[1] - tip[1]) > hl] + [base, inset]
+    if len(body) >= 2:
+        dr.line(body, fill=gold, width=width * s, joint="curve")
+    wing = hl * 0.58
+    left = (base[0] - wing * math.sin(ang), base[1] + wing * math.cos(ang))
+    right = (base[0] + wing * math.sin(ang), base[1] - wing * math.cos(ang))
+    dr.polygon([tip, left, right], fill=gold)
+    return im.resize((W, H), Image.LANCZOS)
+
+
+def episode_badge(number, tmp, d=96):
+    """The episode number in a small disc on the host's ring."""
+    from PIL import Image, ImageDraw
+    s = 4
+    S = d * s
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(im)
+    dr.ellipse((0, 0, S - 1, S - 1), fill=rgb(GOLD) + (255,))
+    r = 4 * s
+    dr.ellipse((r, r, S - 1 - r, S - 1 - r), fill=rgb(DISC_FILL) + (255,))
+    im = im.resize((d, d), Image.LANCZOS)
+    t = fit_height(text_layer(str(number), DISPLAY, 150, GOLD, tmp, "ep"), int(d * 0.50))
+    im.alpha_composite(t, ((d - t.width) // 2, (d - t.height) // 2))
+    return im
+
+
+def pitch_block(tmp):
+    """
+    The pitch exactly as the Snapchat ad sets it, in the ad's own proportions:
+
+        تدريب تعلّم اللغة
+        مو تعليم، تدريب        <- last word heavier, double gold rule under it
+
+    Three pieces, so the emphasised word can carry its own weight, size and
+    underline while the rest stays muted.
+    """
+    from PIL import Image, ImageDraw
+    l1 = fit_height(text_layer("تدريب تعلّم اللغة", NAME, 100, PITCH_INK, tmp, "p1"), 50)
+    l2a = fit_height(text_layer("مو تعليم،", NAME, 100, PITCH_INK, tmp, "p2a"), 44)
+    l2b = fit_height(text_layer("تدريب", NAME, 116, "#FFFFFF", tmp, "p2b"), 60)  # 31/27 of the ad
+
+    gap_w = 16
+    rule_gap, rule_w = 6, 4
+    w = max(l1.width, l2a.width + gap_w + l2b.width)
+    h = l1.height + 16 + max(l2a.height, l2b.height) + 6 + rule_w * 2 + rule_gap
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    out.alpha_composite(l1, (w - l1.width, 0))
+    y2 = l1.height + 16
+    base = y2 + max(l2a.height, l2b.height)
+    out.alpha_composite(l2a, (w - l2a.width, base - l2a.height))
+    xb = w - l2a.width - gap_w - l2b.width
+    out.alpha_composite(l2b, (xb, base - l2b.height))
+    d = ImageDraw.Draw(out)
+    gold = rgb(GOLD) + (255,)
+    y = base + 6
+    d.rectangle((xb, y, xb + l2b.width, y + rule_w - 1), fill=gold)
+    d.rectangle((xb, y + rule_w + rule_gap, xb + l2b.width, y + rule_w * 2 + rule_gap - 1), fill=gold)
+    return out
+
+
+def pitch_line(tmp, cap=40):
+    """
+    The same pitch, set on one line, for formats where it sits beside the mark
+    as a definition of it rather than under it as a caption.
+
+    Reading right to left: "تدريب تعلّم اللغة", a wider gap where the line break
+    used to be, then "مو تعليم،" and the emphasised "تدريب" with its double gold
+    rule. Same words, same emphasis, same proportions as the stacked version.
+    """
+    from PIL import Image, ImageDraw
+    l1 = fit_height(text_layer("تدريب تعلّم اللغة", NAME, 100, PITCH_INK, tmp, "q1"), cap)
+    l2a = fit_height(text_layer("مو تعليم،", NAME, 100, PITCH_INK, tmp, "q2a"), int(cap * 0.88))
+    l2b = fit_height(text_layer("تدريب", NAME, 116, PITCH_INK, tmp, "q2b"), int(cap * 1.20))
+
+    dots = fit_height(text_layer("..", NAME, 100, PITCH_INK, tmp, "qdots"), max(4, int(cap * 0.14)))
+    sep = int(cap * 0.34)          # each side of the dots that stand in for the line break
+    gap = int(cap * 0.32)
+    rule_w = max(3, int(cap * 0.09))
+    rule_gap = max(3, int(cap * 0.12))
+
+    base = max(l1.height, l2a.height, l2b.height)     # the text baseline, from the top
+    w = l1.width + sep + dots.width + sep + l2a.width + gap + l2b.width
+    h = base + 6 + rule_w * 2 + rule_gap
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    x = w - l1.width
+    out.alpha_composite(l1, (x, base - l1.height))
+    x -= sep + dots.width
+    out.alpha_composite(dots, (x, base - dots.height))      # sit on the baseline
+    x -= sep + l2a.width
+    out.alpha_composite(l2a, (x, base - l2a.height))
+    x -= gap + l2b.width
+    out.alpha_composite(l2b, (x, base - l2b.height))
+
+    d = ImageDraw.Draw(out)
+    gold = rgb(GOLD) + (255,)
+    y = base + 6
+    d.rectangle((x, y, x + l2b.width, y + rule_w - 1), fill=gold)
+    d.rectangle((x, y + rule_w + rule_gap, x + l2b.width, y + rule_w * 2 + rule_gap - 1), fill=gold)
+    return out, base
+
+
+def lockup(tmp, word="بودكاست"):
+    """
+    The brand lockup: the إتقان mark, optionally with a programme word beside it.
+
+    `word=""` gives the mark alone - for a video that is not a podcast episode,
+    where calling it بودكاست would be wrong.
+    """
+    from PIL import Image
+    with Image.open(logo_path()) as lg:
+        mark = lg.convert("RGBA")
+    if not word:
+        return mark.crop(mark.getchannel("A").getbbox())
+    l, t, r, b = mark.getchannel("A").getbbox()
+    ink_h = b - t
+    word = fit_height(text_layer(word, NAME, 300, "#FFFFFF", tmp, "lockup"), int(ink_h * 1.00))
+    gap = int(ink_h * 0.30)
+    canvas = Image.new("RGBA", (r + gap + word.width + l, mark.height), (0, 0, 0, 0))
+    canvas.paste(mark, (0, 0), mark)
+    canvas.paste(word, (r + gap, t + (ink_h - word.height) // 2), word)
+    return canvas.crop(canvas.getchannel("A").getbbox())
+
+
+def frame():
+    """The empty brand ground."""
+    from PIL import Image
+    return Image.new("RGBA", (W, H), rgb(SURFACE) + (255,))
+
+
+def draw_headline(img, line1, line2, tmp):
+    """
+    The episode line, top right, right-aligned to RIGHT_EDGE.
+
+    Returns (left_x, mid_y) - where an arrow from the subject zone should
+    point - or None if there is no headline.
+    """
+    from PIL import Image
+    y = HEADLINE_TOP
+    layers = []
+    for i, line in enumerate((line1, line2)):
+        if not line:
+            continue
+        t = text_layer(line, DISPLAY, 150, "#FFFFFF", tmp, "l{}".format(i))
+        if t.width > TEXT_W:
+            t = t.resize((TEXT_W, int(t.height * TEXT_W / t.width)), Image.LANCZOS)
+        layers.append((t, RIGHT_EDGE - t.width, y))
+        y += t.height + 16
+    for t, x, yy in layers:
+        img.alpha_composite(t, (x, yy))
+    if not layers:
+        return None
+    left_x = min(x for _, x, _ in layers)
+    mid_y = (layers[0][2] + layers[-1][2] + layers[-1][0].height) // 2
+    return left_x, mid_y
+
+
+def draw_programme(img, tmp, word="بودكاست"):
+    """Brand lockup bottom right, the pitch under it as its explanation, arrow between."""
+    lk = fit_height(lockup(tmp, word), 66)
+    pb = pitch_block(tmp)
+    pb_y = H - PITCH_BOTTOM - pb.height
+    lk_y = pb_y - 104 - lk.height
+    lk_x, pb_x = RIGHT_EDGE - lk.width, RIGHT_EDGE - pb.width
+    img.alpha_composite(lk, (lk_x, lk_y))
+    img.alpha_composite(pb, (pb_x, pb_y))
+    # Where the arrow leaves the lockup. With the programme word beside it the
+    # mark is the lockup's left part; alone, it is the whole of it.
+    mark_cx = lk_x + int(lk.width * (0.27 if word else 0.50))
+    p0 = (mark_cx - 10, lk_y + lk.height + 8)
+    p2 = (pb_x + int(pb.width * 0.30), pb_y - 12)
+    img.alpha_composite(arrow(p0, p2, (p0[0] - 40, (p0[1] + p2[1]) // 2 + 14)))
+
+
+def draw_host_label(img, label, tmp, cx, d):
+    """
+    The word above the host's photo, with a straight arrow down onto it.
+
+    Straight, not curved: measured off the thumbnail Essam actually published
+    (Downloads/image-1789217977535.png), which is an earlier build than the one
+    left in the call folder. The published frame is the house style; the call
+    folder's copy is not.
+    """
+    if not label:
+        return
+    hl = fit_height(text_layer(label, SUB, 150, GOLD, tmp, "host"), 60)
+    hx = cx - d // 2 - HOST_LABEL_GAP
+    hy = HOST_LABEL_TOP
+    img.alpha_composite(hl, (hx, hy))
+    x = cx - int(HOST_ARROW_DX * d / DIAMETER)     # leaves the ring's upper-left shoulder
+    p2 = (x, hy + hl.height + HOST_ARROW_TIP_GAP)
+    p0 = (x, CY - int(d * 0.47))                   # same x: dead vertical
+    img.alpha_composite(arrow(p0, p2, ((p0[0] + p2[0]) // 2, (p0[1] + p2[1]) // 2)))
+
+
+def point_at_headline(img, anchor, cx, d):
+    """Arrow from the shoulder of the rightmost subject disc up to the headline."""
+    if anchor is None:
+        return
+    left_x, mid_y = anchor
+    p0 = (cx + int(d * 0.36), CY - int(d * 0.36))
+    p2 = (left_x - 22, mid_y + 10)
+    img.alpha_composite(arrow(p0, p2, (p0[0] + 24, p2[1] + 46)))
+
+
+def draw_programme_inline(img, tmp, mark_h=74, cap=46, gap=30):
+    """
+    Mark hard into the bottom-right corner, pitch on one line to its left.
+
+    No arrow: side by side and baseline-aligned, the pitch reads as the mark's
+    definition, which is the whole job it does here. An arrow would only be
+    pointing at something already touching it.
+    """
+    lk = fit_height(lockup(tmp, ""), mark_h)
+    pt, text_base = pitch_line(tmp, cap)
+    bottom = H - PITCH_BOTTOM
+    lk_x = RIGHT_EDGE - lk.width
+    img.alpha_composite(lk, (lk_x, bottom - lk.height))
+    # Optically level, not baseline-matched: the mark is far taller than the
+    # pitch, so a shared baseline leaves the pitch sitting low. Centring the
+    # pitch's text on the mark's middle is what actually reads as one line.
+    img.alpha_composite(pt, (lk_x - gap - pt.width,
+                             bottom - lk.height // 2 - text_base // 2))
+
+
+QUESTION_LEFT = 548      # questions may run this far left and still clear the disc
+QUESTION_SIZE = 150      # the point size every question is shaped at
+QUESTION_TOP = 92        # the band they are spread across
+QUESTION_BOTTOM = 512    # stops clear of the programme row
+HIGHLIGHT_STEP = 1.15    # one type step; the highlight is two of them
+
+
+def draw_questions(img, questions, tmp, highlight=None,
+                   top=QUESTION_TOP, bottom=QUESTION_BOTTOM):
+    """
+    The questions, one per line, right-aligned, spread down the right side.
+
+    Every line is shaped at the SAME point size and the whole set is then scaled
+    by one factor. Normalising each line's ink height instead - which is what an
+    obvious implementation does - silently sets them at different sizes, because
+    a line with a tall ل or a descending ي has a taller ink box than one
+    without, and gets shrunk more to match. They are equals and must be set as
+    equals.
+
+    No bullets. A gold square on every line turns four questions into an agenda
+    slide; the question marks already say these are questions.
+
+    `highlight` is a 0-based index. Given one, that question stays white and the
+    rest drop to MUTED. That is the in-video card: the same frame, reused when a
+    question is reached, so the viewer sees which one is being answered without
+    anything moving. None means all four white - the thumbnail itself.
+    """
+    avail = RIGHT_EDGE - QUESTION_LEFT
+    band = bottom - top
+    layers = [text_layer(q, DISPLAY, QUESTION_SIZE,
+                         "#FFFFFF" if highlight is None or i == highlight else MUTED,
+                         tmp, "qq%d" % i)
+              for i, q in enumerate(questions)]
+
+    # The highlighted line is set at the full base size - the same size the
+    # thumbnail uses, which already fills the column exactly, so it cannot be
+    # made bigger. The contrast therefore comes from the other three, taken two
+    # type steps down. One step was not enough to read as an answer starting.
+    k = min(1.0, avail / max(l.width for l in layers))
+    if sum(l.height for l in layers) * k > band * 0.72:
+        k = band * 0.72 / sum(l.height for l in layers)
+
+    # Positions come from the un-highlighted layout - the thumbnail's own - so
+    # every line's centre is identical on the thumbnail and on all four cards.
+    # Only the type size changes; nothing moves.
+    heights = [l.height * k for l in layers]
+    slack = band - sum(heights)
+    lead = slack / (len(layers) - 1) if len(layers) > 1 else 0
+    y = float(top)
+    centres = []
+    for h in heights:
+        centres.append(y + h / 2)
+        y += h + lead
+
+    quiet = k / (HIGHLIGHT_STEP ** 2)
+    for l, cy, i in zip(layers, centres, range(len(layers))):
+        f = k if (highlight is None or i == highlight) else quiet
+        l = l.resize((max(1, int(l.width * f)), max(1, int(l.height * f))), _LANCZOS())
+        img.alpha_composite(l, (RIGHT_EDGE - l.width, int(round(cy - l.height / 2))))
+
+
+def _LANCZOS():
+    from PIL import Image
+    return Image.LANCZOS

@@ -261,3 +261,14 @@ button.ghost {
 @media (prefers-reduced-motion: reduce) {
   .timer.ringing { animation: none; opacity: 0.8; }
 }
+
+/* A line under the timer for what the call is doing: waiting for the other
+   person to come back, mostly. Reserves its own height so nothing jumps. */
+.call-note {
+  min-height: 1.4em;
+  margin: 6px 0 0;
+  font-size: 15px;
+  color: var(--gold, #C9A227);
+  text-align: center;
+}
+.timer.waiting { opacity: 0.5; }

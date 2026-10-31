@@ -112,10 +112,20 @@ $("consent-ok").addEventListener("click", async () => {
         keepAwake();
       },
       onPeerJoined: () => {
-        $("timer").classList.remove("ringing");
-        startTimer();
+        // Also fires when they come back from a drop, so clear the warning
+        // and keep the original timer running rather than restarting it.
+        $("timer").classList.remove("ringing", "waiting");
+        $("call-note").textContent = "";
+        if (!timerHandle) startTimer();
       },
-      onPeerLeft: () => endCall(),
+      onPeerLeft: () => {
+        // Do NOT end here. A locked phone, a suspended tab or a dead spot
+        // all look exactly like this, and ending means a whole new call
+        // instead of a ten-second pause. The watchdog ends it if they really
+        // are gone; until then, say what is happening.
+        $("timer").classList.add("waiting");
+        $("call-note").textContent = "انقطع الاتصال بعصام… ننتظر عودته";
+      },
       // The call ended itself: peer gone, never answered, or our own
       // connection did not come back.
       onAutoEnd: (reason) => endCall(AUTO_END_TEXT[reason]),

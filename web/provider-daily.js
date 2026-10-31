@@ -30,16 +30,46 @@ const INSTANCE_IDS = {
 // timer still running, unaware, until they hung up by hand - and Daily bills
 // for every minute of it. Nothing on the server can see that: the room is
 // still occupied, so it looks like a call in progress.
-const ALONE_AFTER_ANSWER_MS = 45000;   // peer vanished mid-call
+// How long to hold a call open while the other person is missing.
+//
+// Was 45s, and the call ended the instant they vanished anyway - see
+// onPeerLeft. A phone that locks its screen, a browser that suspends a
+// backgrounded tab, a walk through a dead spot: all of these take longer
+// than 45s to come back from, and ending the call means a whole new one,
+// a new room, and a trainee wondering what he did wrong. Ninety seconds of
+// an empty room costs almost nothing and saves the conversation.
+const ALONE_AFTER_ANSWER_MS = 90000;   // peer vanished mid-call
 const ALONE_WAITING_MS = 150000;       // nobody ever answered
 const CONNECTION_LOST_MS = 25000;      // our own connection never came back
 const WATCHDOG_TICK_MS = 2000;
 
-// Audio is the entire product here, so these matter more than usual.
+// Audio is the entire product here, so these matter more than usual, and the
+// right answer differs by role.
+//
+// The coach records from a dedicated microphone in a quiet room, and his level
+// is normalised downstream anyway. Leaving autoGainControl on only let it ride
+// his voice up until it clipped: measured at exactly 0.0 dBFS with 311 clipped
+// samples on the 30 October call, on both calls, which is distortion no
+// mastering can undo. Noise suppression off for the same reason - it is what
+// punches the digital-silence holes between his phrases, and his room does not
+// need it.
+//
+// The trainee keeps both. Their device, their room and their background are
+// unknown, and for them these are doing real work.
+//
+// Echo cancellation stays on for everyone: without it, a speaker feeds back
+// into its own microphone and the call is unusable without headphones.
 const AUDIO_CONSTRAINTS = {
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
+  coach: {
+    echoCancellation: true,
+    noiseSuppression: false,
+    autoGainControl: false,
+  },
+  trainee: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  },
 };
 
 export class DailyProvider {
@@ -85,11 +115,16 @@ export class DailyProvider {
     // Joining the room is not the same as the other person answering. The
     // trainee arrives first and waits; the call only starts when the coach
     // shows up. Fired once, and also on join if the peer is already there.
-    let peerSeen = false;
+    let peerHere = false;
     const notePeer = (p) => {
-      if (!p || p.local || peerSeen) return;
-      peerSeen = true;
+      if (!p || p.local || peerHere) return;
+      peerHere = true;
       onPeerJoined && onPeerJoined(p.user_name || "");
+    };
+    const notePeerGone = (p) => {
+      if (p && p.local) return;
+      peerHere = false;
+      onPeerLeft && onPeerLeft();
     };
 
     this.call = window.DailyIframe.createCallObject({
@@ -114,7 +149,7 @@ export class DailyProvider {
         const others = Object.values(this.call.participants() || {}).filter((p) => !p.local);
         if (others.length) notePeer(others[0]);
       })
-      .on("participant-left", () => onPeerLeft && onPeerLeft())
+      .on("participant-left", (ev) => notePeerGone(ev && ev.participant))
       .on("error", (e) =>
         onError && onError(e && e.errorMsg ? e.errorMsg : "call error"));
 
@@ -124,7 +159,8 @@ export class DailyProvider {
       audioSource: true,
       videoSource: false,          // never open the camera
       startVideoOff: true,
-      userMediaAudioConstraints: AUDIO_CONSTRAINTS,
+      userMediaAudioConstraints:
+        AUDIO_CONSTRAINTS[this.session.role] || AUDIO_CONSTRAINTS.trainee,
     });
 
     // Only after a successful join: a call that has begun is a call that can
