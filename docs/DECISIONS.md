@@ -29,6 +29,22 @@ the page and microphone capture stops; the server keeps recording and
 receives nothing. One call lost 97 seconds this way. The lock is re-acquired
 on `visibilitychange` because browsers drop it whenever the page is hidden.
 
+**A backgrounded page stops sending audio, so say so.** This is the single
+most expensive failure the app has had, and it is not fixable: a phone browser
+suspends a hidden tab and the microphone goes with it. On 30 October both
+sides hit it inside one session — the coach switched to another app
+mid-sentence to send a link and his voice stopped arriving; the trainee had
+stepped out of the page himself and dropped out of the call, which the old
+`onPeerLeft: () => endCall()` turned into a deleted room he could not rejoin,
+so he dialled again and one call became two. The app said nothing either time;
+both of them diagnosed it out loud, on the recording. Now: the call is held
+open for 90 s instead of ended, the local microphone is re-armed on return
+(but never un-muted if the person muted themselves), the person is told
+"كنت خارج الصفحة — صوتك ما كان يوصل", and the trainee is warned once before
+the call. Rejected: trying to keep capture alive while hidden — the wake lock
+keeps the screen on, nothing keeps a suspended tab running. **The real fix is
+behavioural: no links during the call.** Both failures began with one.
+
 **Not fixed, known:** the app requests `autoGainControl` and
 `noiseSuppression`. Both run before any audio reaches this machine. AGC is the
 best explanation for the coach's voice sounding intermittently suppressed,

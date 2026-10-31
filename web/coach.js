@@ -27,6 +27,26 @@ function show(id) {
   }
 }
 
+/* ------------------------------------------------------------------- note */
+
+let noteHandle = null;
+
+/**
+ * The line under the timer. A timed message never erases a standing one, so
+ * "the trainee dropped, we are waiting" stays up until he is actually back.
+ */
+function showNote(text, ms = 8000) {
+  setNote(text);
+  if (ms) noteHandle = setTimeout(() => setNote(""), ms);
+}
+
+function setNote(text) {
+  if (noteHandle) clearTimeout(noteHandle);
+  noteHandle = null;
+  const el = $("call-note");
+  if (el) el.textContent = text;
+}
+
 /* ------------------------------------------------------------------ timer */
 
 function fmt(total) {
@@ -118,12 +138,19 @@ $("answer-btn").addEventListener("click", async () => {
         // Same as the trainee side: wait, do not end. Ending deletes the room
         // and the trainee cannot come back - that is what turned one call
         // into two on 30 October.
-        const note = $("call-note");
-        if (note) note.textContent = "انقطع اتصال المتدرب… ننتظر عودته";
+        setNote("انقطع اتصال المتدرب… ننتظر عودته");
       },
-      onPeerJoined: () => {
-        const note = $("call-note");
-        if (note) note.textContent = "";
+      onPeerJoined: () => setNote(""),
+      // Back from another app. On 30 October this is what happened when he
+      // left to send a link mid-sentence: his voice stopped arriving and
+      // neither side knew why until he guessed it out loud.
+      onBack: (seconds) => {
+        if (!inCall) return;
+        showNote(
+          seconds < 60
+            ? `كنت خارج الصفحة ${seconds} ثانية — صوتك ما كان يوصل`
+            : "كنت خارج الصفحة — صوتك ما كان يوصل"
+        );
       },
       onAutoEnd: (reason) => endCall(AUTO_END_TEXT[reason]),
       onError: () => endCall(),

@@ -130,7 +130,17 @@ button:not(:disabled):active { opacity: .8; }
   padding: 18px 20px;
   font-size: 15px;
   line-height: 1.9;
-  margin-bottom: 28px;
+  margin-bottom: 18px;
+}
+
+/* Quieter than the consent box above it: a practical note, not a term. */
+.consent-hint {
+  max-width: 380px;
+  margin: 0 0 26px;
+  font-size: 14px;
+  line-height: 1.8;
+  text-align: center;
+  opacity: 0.72;
 }
 
 /* ---- in call: an ordinary voice call --------------------------------- */

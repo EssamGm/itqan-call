@@ -43,6 +43,21 @@ const ALONE_WAITING_MS = 150000;       // nobody ever answered
 const CONNECTION_LOST_MS = 25000;      // our own connection never came back
 const WATCHDOG_TICK_MS = 2000;
 
+// Leaving the page is the one failure this app cannot prevent and never
+// explained. A phone browser suspends a backgrounded tab and the microphone
+// goes with it. On 30 October both sides hit it inside one session: the coach
+// switched to another app mid-sentence to send a link and his voice simply
+// stopped arriving ("رحت على التكتوك وانا قاعد اتكلمك، فالظاهر هذا قطع
+// الصوت"), and the trainee, who had stepped out of the page himself, dropped
+// out of the call and had to dial again - his first words on the second call
+// were a bug report: "اذا طلعت، يقفل".
+//
+// The app told neither of them anything. They worked it out by guessing, out
+// loud, on the recording. Nothing here can keep a suspended tab alive - that
+// is the browser's decision - but it can notice, repair the microphone, and
+// say so plainly.
+const AWAY_MIN_MS = 1500;
+
 // Audio is the entire product here, so these matter more than usual, and the
 // right answer differs by role.
 //
@@ -77,6 +92,9 @@ export class DailyProvider {
     this.apiBase = apiBase;
     this.call = null;
     this.session = null;
+    // What the person asked for with the mic button, so coming back from the
+    // background never un-mutes someone who muted themselves on purpose.
+    this._micWanted = true;
   }
 
   async _post(path, body) {
@@ -110,7 +128,8 @@ export class DailyProvider {
 
   async join(handlers = {}) {
     if (!this.session) throw new Error("createSession must run before join");
-    const { onRemoteAudio, onJoined, onPeerJoined, onPeerLeft, onError, onAutoEnd } = handlers;
+    const { onRemoteAudio, onJoined, onPeerJoined, onPeerLeft, onError, onAutoEnd,
+            onBack } = handlers;
 
     // Joining the room is not the same as the other person answering. The
     // trainee arrives first and waits; the call only starts when the coach
@@ -166,8 +185,55 @@ export class DailyProvider {
     // Only after a successful join: a call that has begun is a call that can
     // be left running by accident.
     this._startWatchdog({ onEnded: (reason) => onAutoEnd && onAutoEnd(reason) });
+    this._startAwayWatch({ onBack });
 
     return this.session;
+  }
+
+  /**
+   * Notice that this page was in the background, and put the microphone back.
+   *
+   * A microphone torn down while the page slept does not reliably come back on
+   * its own, so re-arm it - but only if the person had not muted themselves,
+   * or returning from the background would quietly un-mute them.
+   *
+   * The repair is the smaller half. The larger half is `onBack`: the person
+   * gets told their voice was not arriving while they were away, which is the
+   * thing the app has never done.
+   */
+  _startAwayWatch({ onBack } = {}) {
+    let hiddenAt = null;
+
+    const onChange = () => {
+      if (document.hidden) {
+        if (!hiddenAt) hiddenAt = Date.now();
+        return;
+      }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = null;
+      if (!this.call || away < AWAY_MIN_MS) return;
+
+      try {
+        const me = (this.call.participants() || {}).local;
+        const track = me && me.tracks && me.tracks.audio;
+        const live = track && track.state === "playable";
+        if (this._micWanted && !live) {
+          this.call.setLocalAudio(false);
+          this.call.setLocalAudio(true);
+        }
+      } catch (_) {
+        /* telling them is the part that matters; do that either way */
+      }
+      onBack && onBack(Math.round(away / 1000));
+    };
+
+    document.addEventListener("visibilitychange", onChange);
+    this._awayOff = () => document.removeEventListener("visibilitychange", onChange);
+  }
+
+  _stopAwayWatch() {
+    if (this._awayOff) this._awayOff();
+    this._awayOff = null;
   }
 
   /**
@@ -315,6 +381,7 @@ export class DailyProvider {
    */
   async leave({ endForEveryone = false } = {}) {
     this._stopWatchdog();
+    this._stopAwayWatch();
     const sessionId = this.session && this.session.sessionId;
     try {
       if (this.call) await this.call.leave();
@@ -345,6 +412,7 @@ export class DailyProvider {
   }
 
   setMic(on) {
+    this._micWanted = !!on;
     if (this.call) this.call.setLocalAudio(!!on);
   }
 

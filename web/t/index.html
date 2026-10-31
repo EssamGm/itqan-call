@@ -41,6 +41,10 @@
   <div class="consent">
     سيتم تسجيل هذه المكالمة، وقد تُنشر من قِبل إتقان.
   </div>
+  <!-- Said once, before the call, because it is the only thing that prevents
+       rather than reports: a phone browser stops sending the microphone the
+       moment this page goes into the background. -->
+  <p class="consent-hint">خلّ هذه الصفحة مفتوحة أثناء المكالمة — الخروج منها يقطع صوتك.</p>
   <button id="consent-ok">موافق، ابدأ المكالمة</button>
   <p class="status" id="consent-status">&nbsp;</p>
 </section>

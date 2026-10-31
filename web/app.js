@@ -28,6 +28,26 @@ function traineeName() {
   return (localStorage.getItem(NAME_KEY) || "").trim();
 }
 
+/* ------------------------------------------------------------------- note */
+
+let noteHandle = null;
+
+/**
+ * The line under the timer. Latest message wins, and a timed message never
+ * erases a standing one - "we are waiting for Essam to come back" has to stay
+ * on screen until he actually does.
+ */
+function showNote(text, ms = 8000) {
+  setNote(text);
+  if (ms) noteHandle = setTimeout(() => setNote(""), ms);
+}
+
+function setNote(text) {
+  if (noteHandle) clearTimeout(noteHandle);
+  noteHandle = null;
+  $("call-note").textContent = text;
+}
+
 /* ------------------------------------------------------------------ timer */
 
 function fmt(total) {
@@ -115,7 +135,7 @@ $("consent-ok").addEventListener("click", async () => {
         // Also fires when they come back from a drop, so clear the warning
         // and keep the original timer running rather than restarting it.
         $("timer").classList.remove("ringing", "waiting");
-        $("call-note").textContent = "";
+        setNote("");
         if (!timerHandle) startTimer();
       },
       onPeerLeft: () => {
@@ -124,7 +144,18 @@ $("consent-ok").addEventListener("click", async () => {
         // instead of a ten-second pause. The watchdog ends it if they really
         // are gone; until then, say what is happening.
         $("timer").classList.add("waiting");
-        $("call-note").textContent = "انقطع الاتصال بعصام… ننتظر عودته";
+        setNote("انقطع الاتصال بعصام… ننتظر عودته");
+      },
+      // Came back from another app or a locked screen. While away, this
+      // device was sending nothing - say so, because the alternative is
+      // what happened on 30 October: both sides guessing at it mid-call.
+      onBack: (seconds) => {
+        if (!timerHandle) return;          // still ringing; nothing was lost
+        showNote(
+          seconds < 60
+            ? `كنت خارج الصفحة ${seconds} ثانية — صوتك ما كان يوصل`
+            : "كنت خارج الصفحة — صوتك ما كان يوصل"
+        );
       },
       // The call ended itself: peer gone, never answered, or our own
       // connection did not come back.
