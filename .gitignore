@@ -1,17 +1,8 @@
-# Secrets live outside the repo entirely, at C:\Itqan\.env
-.env
-*.env
+# Dated editor backups. These are working files, not history - git is the
+# history. They were swept into a commit once by `git add -A`; ignoring them
+# keeps that from happening again.
+*.bak
+*.bak-*
 
-# Recordings and renders are personal data - never commit them
-recordings/
-out/
-*.mp4
-*.m4a
-*.webm
-
-__pycache__/
-*.pyc
-.vercel/
-
-# Transcripts sit beside the audio and contain what people said
-*.transcript.json
+# Scratch output from clip and thumbnail experiments.
+_scratch/
